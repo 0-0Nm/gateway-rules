@@ -199,7 +199,6 @@ fun ProviderEditScreen(
 
 // ==================== 复用 rikka 的 formItem 范式 ====================
 
-@Composable
 internal fun CardGroupScope.textFieldItem(
     label: String,
     value: String,

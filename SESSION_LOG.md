@@ -102,3 +102,45 @@ d92b4dd  GatewayServer + MainActivity
 - 自动启动后端口 38080 是否真的监听
 - /health /v1/models /v1/_gw/status 是否可访问
 - 日志文件是否落盘 (/data/data/com.aqi.ccb/files/logs/)
+
+## Turn 68-73 (UI 重做: 抄 rikka 提供商页 + 自做聚合/规则页)
+
+### 用户要求
+1 UI 别太简陋
+2 提供商界面直接抄 rikka
+3 只需自做：聚合界面 + 规则界面
+
+### 关键取证
+rikka 的 provider UI 是 **Jetpack Compose + Material3**：
+  ProviderConfigure.kt 663行, 依赖 CardGroupScope/textFieldItem/formItem/secret眼睛按钮
+  CardGroup.kt 395行（圆角20dp / 项间距2dp / 内部圆角4dp / 标题在上输入框在下）
+本项目原为纯 View + useAndroidX=false -> 直接抄编不过
+结论：先做 Compose 技术栈迁移，再按 rikka 范式复刻
+
+### 技术栈迁移
+app/build.gradle.kts: buildFeatures.compose=true, composeOptions.kotlinCompilerExtensionVersion=1.5.14
+                       compose-bom 2024.06.00 + activity-compose 1.9.0 + lifecycle 2.8.2
+gradle.properties: android.useAndroidX=true
+
+### 移植改动（CardGroup.kt 12747B）
+CustomColors.listItemColors -> ListItemDefaults.colors()（跟随 MaterialTheme）
+MaterialTheme.motionScheme.* -> 默认 animateDpAsState 规格
+JetbrainsMono -> FontFamily.Monospace（MonoFont）
+HugeIcons -> material-icons-extended（Visibility/VisibilityOff/Add/PlayArrow/Stop/Settings/Cloud/ArrowBack）
+保留原始视觉参数与 formItem 范式
+
+### 三页结构
+ui/MainScreen.kt 11433B   聚合页(自做): 网关状态/端口/启停/提供商列表/规则列表/日志tail
+ui/ProviderEditScreen.kt 10364B  提供商页(抄rikka): 基本信息/模型探测/限流/保存删除
+                                 textFieldItem 标题上输入框下, secret 眼睛按钮
+ui/RuleEditScreen.kt 9319B  规则页(自做): select 19算子勾选 / execute 8算子单选 / 限流5参数
+data/ProviderDraft.kt 3473B  UI编辑态(允许半填) -> 落盘前才转严格契约
+data/ProviderRepo.kt 5026B   唯一通道: providers.json/rules.json/keys.json + 运行时对象
+MainActivity.kt 14020B       Compose 入口: 三页路由 + 网关启停 + 自动启动(600ms)
+
+### 清理
+删除 View 版 ProviderActivity.kt / RuleActivity.kt（与 Compose 版重复且风格割裂）
+Manifest 加 configChanges + windowSoftInputMode=adjustResize
+
+### 提交
+d011718 feat(ui): Compose UI - rikka-style provider page + aggregation page + rule page
