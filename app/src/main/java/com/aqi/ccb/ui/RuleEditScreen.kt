@@ -45,6 +45,8 @@ data class RuleDraft(
     val selectedOps: List<String> = listOf("breaker_filter", "fastest_first"),
     val executeOp: String = "first",
     val enabled: Boolean = true,
+    /** 模型切换粒度：SESSION / TURN / CALL */
+    val switchGranularity: String = "TURN",
     val ratePerMin: String = "30",
     val burst: String = "3",
     val minIntervalMs: String = "800",
@@ -167,9 +169,44 @@ fun RuleEditScreen(
                 }
             }
 
+            // ---------- 切换粒度 ----------
+            Spacer(Modifier.height(16.dp))
+            CardGroup(title = { Text("③ 模型切换粒度") }) {
+                item(
+                    onClick = { onDraftChange(draft.copy(switchGranularity = "SESSION")) },
+                    leadingContent = {
+                        RadioButton(selected = draft.switchGranularity == "SESSION", onClick = null)
+                    },
+                    headlineContent = { Text("对话级 · SESSION") },
+                    supportingContent = {
+                        Text("整个会话固定同一家。缓存命中最高，但单号排队会拖死会话")
+                    },
+                )
+                item(
+                    onClick = { onDraftChange(draft.copy(switchGranularity = "TURN")) },
+                    leadingContent = {
+                        RadioButton(selected = draft.switchGranularity == "TURN", onClick = null)
+                    },
+                    headlineContent = { Text("轮次级 · TURN（推荐）") },
+                    supportingContent = {
+                        Text("同一轮内（含工具调用往返）固定，下一轮才换。避开 tool_call 格式不兼容")
+                    },
+                )
+                item(
+                    onClick = { onDraftChange(draft.copy(switchGranularity = "CALL")) },
+                    leadingContent = {
+                        RadioButton(selected = draft.switchGranularity == "CALL", onClick = null)
+                    },
+                    headlineContent = { Text("调用级 · CALL（有风险）") },
+                    supportingContent = {
+                        Text("每次请求都可能换。负载最分散，但多轮工具调用可能因 tool_call_id 不兼容而失败")
+                    },
+                )
+            }
+
             // ---------- 限流 ----------
             Spacer(Modifier.height(16.dp))
-            CardGroup(title = { Text("③ 限流（写入全部提供商）") }) {
+            CardGroup(title = { Text("④ 限流（写入全部提供商）") }) {
                 textFieldItem(
                     label = "每分钟请求数 ratePerMin",
                     value = draft.ratePerMin,

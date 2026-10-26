@@ -14,6 +14,25 @@ enum class BuiltInTool { SEARCH, URL_CONTEXT, IMAGE_GENERATION }
 enum class Tier { free, paid }
 enum class BreakerState { CLOSED, OPEN, HALF_OPEN }
 
+/**
+ * 模型切换粒度 —— 决定"同一个会话里多久可以换一次后端模型"。
+ *
+ * SESSION 对话级：整个会话固定，缓存命中最高，但单号排队会拖死
+ * TURN    轮次级（默认/推荐）：同一 user turn 内（含全部 tool call 往返）固定，
+ *          下一轮才可能换。避开 tool_call_id / function calling 格式不兼容问题
+ * CALL    调用级：每次请求都可能换，负载最分散但 tool call 多轮会崩，
+ *          必须由用户显式选择并承担风险
+ */
+enum class SwitchGranularity {
+    SESSION, TURN, CALL;
+
+    companion object {
+        fun parse(v: String?): SwitchGranularity = runCatching {
+            valueOf((v ?: "TURN").uppercase())
+        }.getOrDefault(TURN)
+    }
+}
+
 data class Model(
     val modelId: String,
     val displayName: String = "",
@@ -114,6 +133,8 @@ data class RuleSpec(
     val select: List<OpCall> = emptyList(),
     val execute: OpCall = OpCall("race"),
     val rateLimitOverride: Map<String, RatePolicy> = emptyMap(),
+    /** 切换粒度，默认 TURN（安全） */
+    val switchGranularity: SwitchGranularity = SwitchGranularity.TURN,
     val version: Int = RULE_SPEC_VERSION
 ) {
     companion object {
@@ -149,6 +170,7 @@ data class RuleSpec(
                 select = sel,
                 execute = ex,
                 rateLimitOverride = ov,
+                switchGranularity = SwitchGranularity.parse(r["switchGranularity"] as? String),
                 version = v
             )
         }
@@ -165,5 +187,7 @@ data class RequestCtx(
     var estTokens: Int = 0,
     var needTools: Boolean = false,
     var needVision: Boolean = false,
-    var dryRun: Boolean = false
+    var dryRun: Boolean = false,
+    /** 当前是会话里的第几轮（0 起），用于 TURN 粒度粘性 */
+    var turnIndex: Int = 0
 )

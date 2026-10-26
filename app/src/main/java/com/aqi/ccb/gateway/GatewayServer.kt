@@ -158,10 +158,16 @@ class GatewayServer(
         val bodyStr = String(body, Charsets.UTF_8)
         val modelId = extractJsonString(bodyStr, "model") ?: ""
         val stream = bodyStr.contains("\"stream\"") && bodyStr.contains("true")
+        val sessionId = extractJsonString(bodyStr, "session_id")
+            ?: extractJsonString(bodyStr, "conversation_id")
+            ?: extractJsonString(bodyStr, "user")
+            ?: ""
         val ctx = RequestCtx(
             modelId = modelId,
             reqId = reqId,
             ruleKey = rules.firstOrNull()?.id ?: "default",
+            sessionId = sessionId,
+            turnIndex = SwitchPolicy.deriveTurnIndex(bodyStr),
             estTokens = bodyStr.length / 3
         )
 
@@ -205,9 +211,19 @@ class GatewayServer(
             return
         }
 
+        // ---- 模型切换粒度: 按 SESSION/TURN/CALL 重排候选(只调排序, 不硬绑) ----
+        val ordered = SwitchPolicy.reorder(cands, rule.switchGranularity, ctx.sessionId, ctx.turnIndex)
+        GateLog.info(
+            "switch",
+            "gran=" + rule.switchGranularity.name +
+                " session=" + (if (ctx.sessionId.isEmpty()) "-" else ctx.sessionId) +
+                " turn=" + ctx.turnIndex +
+                " order=" + ordered.joinToString(",") { it.p.id }
+        )
+
         // ---- 顺序尝试（execute=first 语义；race 需并发，此处按顺序保证稳定性）----
         var lastErr: String? = null
-        for (c in cands) {
+        for (c in ordered) {
             val permit = limiter.acquire(c.p.id)
             if (!permit.ok) {
                 GateLog.rateLimited(reqId, c.p.id, permit.waitMs)
@@ -225,8 +241,12 @@ class GatewayServer(
                     c.p.lastUsedMs = System.currentTimeMillis()
                     GateLog.attempt(reqId, c.p.id, modelId, true, latency, code, null)
                     relay(output, conn, stream)
+                    SwitchPolicy.onSuccess(
+                        rule.switchGranularity, ctx.sessionId, ctx.turnIndex, c.p.id
+                    )
                     GateLog.requestEnd(reqId, true, c.p.id,
-                        (System.currentTimeMillis() - reqStart).toDouble(), c.why + listOf("first_winner"))
+                        (System.currentTimeMillis() - reqStart).toDouble(),
+                        c.why + listOf("first_winner", "gran=" + rule.switchGranularity.name))
                     totalOk++
                     return
                 } else {

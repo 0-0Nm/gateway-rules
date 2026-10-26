@@ -353,6 +353,7 @@ class MainActivity : ComponentActivity() {
             selectedOps = ops,
             executeOp = o.optJSONObject("execute")?.optString("op") ?: "first",
             enabled = o.optBoolean("enabled", true),
+            switchGranularity = o.optString("switchGranularity", "TURN"),
         )
     }
 
@@ -383,6 +384,7 @@ class MainActivity : ComponentActivity() {
             put("enabled", d.enabled)
             put("select", sel)
             put("execute", JSONObject().put("op", d.executeOp).put("args", JSONObject()))
+            put("switchGranularity", d.switchGranularity)
         }
         ProviderRepo.saveRule(this, rule)
         ProviderRepo.syncRateLimit(this, JSONObject().apply {
