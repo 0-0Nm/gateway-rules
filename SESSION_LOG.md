@@ -30,3 +30,48 @@
 - 构建结论
 - 真实网关服务端代码
 - 三项常驻要求落地：①逐请求调用日志 ②系统运行日志 ③自定义限流(ratePerMin/burst/minIntervalMs/jitterMs/maxInflight)
+
+## Turn 66 (上轮欠账补齐 + 云端构建打通)
+### 欠账补齐
+- SESSION_LOG 已落盘(turn57-65 内容)
+- 首轮构建结论已取：run 40270699709 = failure
+
+### 构建失败根因(已取证)
+```
+Warning: Failed to find package 'tools'
+Error: /usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager failed with exit code 1
+```
+android-actions/setup-android@v3 试图安装已被 Android SDK 官方移除的 `tools` 包。
+runner 本身已预装 SDK(/usr/local/lib/android/sdk)，该步骤纯属多余。
+修复：删除 setup-android 步骤；setup-gradle 固定 gradle-version 8.7
+(AGP 8.5.2 要求 Gradle 8.7+)。
+
+### 构建打通
+commit 0247e31 -> run 40270922136 = **success** (云端可出 APK)
+
+### 真实代码(7 个 Kotlin 文件)
+gateway/Contracts.kt    6551B  Model/Provider/RuleSpec/OpCall/RequestCtx + JSON 反序列化
+                                ruleSpecVersion=1 硬校验; apiKeyRef 只存指针
+gateway/GateLog.kt      6279B  双轨日志: calls/YYYY-MM-DD.jsonl + system/gateway.log
+                                密钥强制脱敏(SENSITIVE 集合); 大小轮转; 写失败不阻塞
+gateway/RateLimit.kt    5478B  四层闸: 令牌桶(ratePerMin+burst) / 最小间隔 / 抖动 / 并发上限
+                                peek() 只读不消耗(供 explain); acquire/release 配对
+gateway/SafeExpr.kt     7204B  受限表达式: 白名单文法 + 递归下降; 无函数调用/属性/下标
+                                MAX_LEN 512 / MAX_TOKENS 200; 解析失败一律 false(安全默认拒绝)
+gateway/RuleEngine.kt  11706B  19 个 select 纯算子 + RuntimeState(rr/prefix/errorWindow)
+                                explain() 用 dryRun 副本, 不推进轮转状态
+gateway/GatewayServer.kt 14842B ServerSocket + 8 线程池 + HttpURLConnection
+                                /v1/models /v1/chat/completions /v1/_gw/status /health
+                                SSE 字节透传; 429 -> breaker OPEN 10min; 限流准入+归还
+MainActivity.kt         9032B  状态面板: 端口/启停/自检/日志tail; 纯代码 UI 无 layout 依赖
+                                自检覆盖 规则选路 + SafeExpr 注入拦截 + 限流第二次拦截
+
+### 已知取舍(诚实标注)
+- execute 目前只实现 first 语义(顺序尝试)；race 真并发需 coroutines+Deferred，
+  当前版本为保证稳定先串行。Python 侧已验证 race 语义，Kotlin 侧后续补。
+- 无 UI 导入 provider 功能，DemoConfig 内置 mock provider。
+- 预置 mock 上游 http://127.0.0.1:9099/v1 用于自检。
+
+### 提交
+14bb5e0  5 个核心文件
+d92b4dd  GatewayServer + MainActivity

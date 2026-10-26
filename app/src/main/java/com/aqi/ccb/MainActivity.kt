@@ -122,6 +122,10 @@ class MainActivity : Activity() {
         testBtn.setOnClickListener { selfTest() }
 
         ui.post(ticker)
+
+        // 常驻服务定位：启动即拉起网关，不依赖手动点击。
+        // 端口被占用时会在状态栏提示失败，不崩溃。
+        ui.postDelayed({ runCatching { startGateway() } }, 600)
     }
 
     override fun onDestroy() {

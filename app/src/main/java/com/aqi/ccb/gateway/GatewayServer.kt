@@ -151,6 +151,7 @@ class GatewayServer(
     }
 
     private fun handleChat(output: OutputStream, reqId: String, body: ByteArray) {
+        val reqStart = System.currentTimeMillis()
         val bodyStr = String(body, Charsets.UTF_8)
         val modelId = extractJsonString(bodyStr, "model") ?: ""
         val stream = bodyStr.contains("\"stream\"") && bodyStr.contains("true")
@@ -210,7 +211,7 @@ class GatewayServer(
                     GateLog.attempt(reqId, c.p.id, modelId, true, latency, code, null)
                     relay(output, conn, stream)
                     GateLog.requestEnd(reqId, true, c.p.id,
-                        (System.currentTimeMillis() - t0Of(reqId, at)).toDouble(), c.why + listOf("first_winner"))
+                        (System.currentTimeMillis() - reqStart).toDouble(), c.why + listOf("first_winner"))
                     totalOk++
                     return
                 } else {
@@ -241,8 +242,6 @@ class GatewayServer(
         GateLog.requestEnd(reqId, false, "-", 0.0, listOf("all_failed"))
         writeJson(output, 502, """{"error":{"message":"all providers failed: ${esc(lastErr ?: "")}","type":"upstream"}}""")
     }
-
-    private fun t0Of(reqId: String, at: Long): Long = at
 
     private fun openUpstream(c: Cand, body: ByteArray): HttpURLConnection {
         val base = c.p.baseUrl.trimEnd('/')
