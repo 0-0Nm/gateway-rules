@@ -174,7 +174,7 @@ class GatewayServer(
 
         // ---- 虚拟模型优先: 客户端请求的 model 名若命中虚拟模型, 用其绑定的 members 做候选 ----
         val resolved = VirtualModelResolver.resolve(modelId, virtualModels, providers)
-        val cands: List<Cand>
+        var cands: List<Cand>
         val targetModelId: String
         if (resolved != null) {
             // 虚拟模型命中: 候选来自 members, 转发时把 model 改写为各 member 的真实 modelId
