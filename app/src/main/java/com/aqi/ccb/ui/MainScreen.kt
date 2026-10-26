@@ -86,6 +86,8 @@ data class RuleRow(
 @Composable
 fun MainScreen(
     state: MainUiState,
+    currentTab: String = "agg",
+    onTabChange: (String) -> Unit = {},
     onStart: () -> Unit,
     onStop: () -> Unit,
     onPortChange: (String) -> Unit,
@@ -115,11 +117,27 @@ fun MainScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(pad)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
+                .padding(pad),
         ) {
-            // ==================== 网关状态 ====================
+            PagerTabs(
+                tabs = listOf(
+                    TabItem("agg", "聚合"),
+                    TabItem("providers", "提供商"),
+                    TabItem("rules", "规则"),
+                    TabItem("vmodels", "虚拟模型"),
+                ),
+                selected = currentTab,
+                onSelect = onTabChange,
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+            ) {
+            // ==================== 网关状态（聚合 tab）====================
+            if (currentTab == "agg") {
             CardGroup(title = { Text("网关") }) {
                 item(
                     leadingContent = {
@@ -187,8 +205,10 @@ fun MainScreen(
                     }
                 }
             }
+            }
 
             // ==================== 提供商 ====================
+            if (currentTab == "providers") {
             Spacer(Modifier.height(8.dp))
             CardGroup(title = { Text("提供商（${state.providers.size}）") }) {
                 if (state.providers.isEmpty()) {
@@ -226,8 +246,10 @@ fun MainScreen(
                     }
                 }
             }
+            }
 
             // ==================== 虚拟模型 ====================
+            if (currentTab == "vmodels") {
             Spacer(Modifier.height(8.dp))
             CardGroup(title = { Text("虚拟模型（${state.virtualModels.size}）") }) {
                 if (state.virtualModels.isEmpty()) {
@@ -259,8 +281,10 @@ fun MainScreen(
                     }
                 }
             }
+            }
 
             // ==================== 规则 ====================
+            if (currentTab == "rules") {
             Spacer(Modifier.height(8.dp))
             CardGroup(title = { Text("规则（${state.rules.size}）") }) {
                 if (state.rules.isEmpty()) {
@@ -288,8 +312,10 @@ fun MainScreen(
                     }
                 }
             }
+            }
 
-            // ==================== 日志 ====================
+            // ==================== 日志（聚合 tab）====================
+            if (currentTab == "agg") {
             Spacer(Modifier.height(8.dp))
             CardGroup(title = { Text("系统日志") }) {
                 formItem(headlineContent = { Text("最近 25 行") }) {
@@ -303,8 +329,10 @@ fun MainScreen(
                     )
                 }
             }
+            }
 
             Spacer(Modifier.height(32.dp))
+            }
         }
     }
 }
