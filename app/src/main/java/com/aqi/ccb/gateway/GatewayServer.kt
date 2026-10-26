@@ -366,8 +366,11 @@ class GatewayServer(
             """"breaker":"${p.breaker}","lat":${"%.0f".format(p.latEwma)},""" +
             """"rate":${peekJson(p.id)}}"""
         }
+        val sw = SwitchPolicy.stats()
         return """{"running":${running.get()},"port":$port,"requests":$totalRequests,""" +
-            """"ok":$totalOk,"fail":$totalFail,"inflight":${inflight.get()},"providers":[$ps]}"""
+            """"ok":$totalOk,"fail":$totalFail,"inflight":${inflight.get()},""" +
+            """"switch":{"bindings":${sw["bindings"]},"sessions":${sw["sessions"]}},""" +
+            """"providers":[$ps]}"""
     }
 
     private fun peekJson(pid: String): String {
