@@ -26,7 +26,8 @@ class GatewayServer(
     private var providers: List<Provider>,
     private var rules: List<RuleSpec>,
     private val limiter: RateLimiter,
-    private val localAuth: String = ""
+    private val localAuth: String = "",
+    private var virtualModels: List<VirtualModel> = emptyList()
 ) {
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
@@ -39,9 +40,11 @@ class GatewayServer(
     @Volatile var totalOk: Long = 0
     @Volatile var totalFail: Long = 0
 
-    fun update(providers: List<Provider>, rules: List<RuleSpec>) {
+    fun update(providers: List<Provider>, rules: List<RuleSpec>,
+               virtualModels: List<VirtualModel>? = null) {
         this.providers = providers
         this.rules = rules
+        virtualModels?.let { this.virtualModels = it }
     }
 
     fun start(): Boolean {
@@ -169,7 +172,17 @@ class GatewayServer(
             return
         }
 
-        var cands = RuleEngine.buildCands(providers, ctx)
+        // ---- 虚拟模型优先: 客户端请求的 model 名若命中虚拟模型, 用其绑定的 members 做候选 ----
+        var targetModelId = modelId
+        var cands = VirtualModelResolver.resolve(modelId, virtualModels, providers)
+        if (cands == null) {
+            cands = RuleEngine.buildCands(providers, ctx)
+        } else {
+            // 虚拟模型命中: 转发时把 model 改写为各 member 的真实 modelId
+            // (在 _call/openUpstream 层用 targetModelId 覆写 body)
+            cands.let { it.forEach { c -> c.why.add("vmodel_target=${c.m.modelId}") } }
+            targetModelId = cands.firstOrNull()?.m?.modelId ?: modelId
+        }
         if (cands.isEmpty()) {
             writeJson(output, 404, """{"error":{"message":"no provider supports model '$modelId'","type":"no_model"}}""")
             totalFail++

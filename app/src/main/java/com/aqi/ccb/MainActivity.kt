@@ -19,6 +19,7 @@ import com.aqi.ccb.data.ProviderDraft
 import com.aqi.ccb.data.ProviderRepo
 import com.aqi.ccb.gateway.ConfigStore
 import com.aqi.ccb.gateway.GateLog
+import com.aqi.ccb.gateway.FloatingBall
 import com.aqi.ccb.gateway.GatewayServer
 import com.aqi.ccb.gateway.RateLimiter
 import com.aqi.ccb.gateway.RatePolicy
@@ -114,6 +115,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
         server?.stop()
+        FloatingBall.detach()
         super.onDestroy()
     }
 
@@ -191,6 +193,8 @@ class MainActivity : ComponentActivity() {
         if (srv.start()) {
             server = srv
             mainState = mainState.copy(statusNote = null)
+            FloatingBall.attach(this)
+            FloatingBall.setState(FloatingBall.STATE_IDLE)
         } else {
             mainState = mainState.copy(statusNote = "启动失败：${srv.lastError}（端口被占用？）")
         }
@@ -200,6 +204,7 @@ class MainActivity : ComponentActivity() {
     private fun stopGateway() {
         server?.stop()
         server = null
+        FloatingBall.detach()
         refreshMain()
     }
 

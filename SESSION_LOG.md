@@ -144,3 +144,42 @@ Manifest 加 configChanges + windowSoftInputMode=adjustResize
 
 ### 提交
 d011718 feat(ui): Compose UI - rikka-style provider page + aggregation page + rule page
+
+## Turn 74-80 (Compose版构建成功 + 装机实测全通)
+
+### 构建修复
+- d011718 首次Compose构建 failure, 16处错误
+- 根因: textFieldItem 误加 @Composable, 而 CardGroup content lambda 非 composable
+  (rikka 原版该函数无 @Composable, remember/OutlinedTextField 在 formItem{} 内)
+- cfae12b 修复 -> run 40273097996 = success
+
+### 下载与装机
+- artifact 12629059354 = 13,690,457B zip
+- 下载慢的原因: GitHub artifact 走 Azure blob 302, 国内蜂窝单连接 ~2KB/s;
+  gh_resolve 代理全不适用(需Bearer鉴权, 代理401/403)
+- 实际进度: 被打断的curl其实一直续传到 13,631,488B (99.6%), 断点续传补完
+- APK: app-debug.apk 53MB (Compose全量未裁剪, 后续可R8/资源收缩)
+- SIGNATURE_CONFLICT: Actions 每次构建用临时 debug key, 卸载重装
+- 安装成功: com.aqi.ccb v0.2.0, 54,558,888B
+
+### 运行时实测(全部通过)
+- 进程: pid 10613
+- /health        -> {"status":"ok","running":true,"port":38080}
+- /v1/models     -> mock-model (兜底配置生效)
+- /v1/_gw/status -> running=true, requests=3, providers=[mock, tokens=3.0, can_send=true]
+- 自动启动生效: onCreate 后 600ms 自动 startGateway, 无需手动点
+- 注: STRX ubuntu 容器 ss 看不到 Android 主机端口(网络命名空间隔离), curl 直连正常
+
+### 三项常驻要求落地确认
+1 调用日志: GateLog.calls/YYYY-MM-DD.jsonl (req_id/provider/model/latency_ms/http_status/trace)
+2 系统日志: GateLog.system/gateway.log (启动/限流/上游异常/配置变更)
+3 自定义限流: RateLimit.kt 四层闸 + UI可配(ratePerMin/burst/minIntervalMs/jitterMs/maxInflight)
+  -> /v1/_gw/status 实时返回 tokens/inflight/can_send/wait_ms
+
+### 当前 UI
+聚合页(MainScreen) / 提供商页(rikka范式 ProviderEditScreen) / 规则页(RuleEditScreen 19+8算子)
+
+### 后续可做
+- R8/资源收缩 减 APK 体积(53MB -> 预计 <15MB)
+- race 真并发(execute 目前只有 first 语义)
+- 真实上游接入(当前兜底 mock)
