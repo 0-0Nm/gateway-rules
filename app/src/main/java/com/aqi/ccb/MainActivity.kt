@@ -21,6 +21,8 @@ import com.aqi.ccb.data.VirtualModelDraft
 import com.aqi.ccb.data.VirtualModelRepo
 import com.aqi.ccb.gateway.VirtualModelStore
 import com.aqi.ccb.ui.VirtualModelEditScreen
+import com.aqi.ccb.ui.PagerTabs
+import com.aqi.ccb.ui.TabItem
 import com.aqi.ccb.gateway.ConfigStore
 import com.aqi.ccb.gateway.GateLog
 import com.aqi.ccb.gateway.FloatingBall
@@ -45,6 +47,9 @@ class MainActivity : ComponentActivity() {
 
     // ---- 顶层导航状态 ----
     private var route by mutableStateOf("main")
+
+    // ---- 主界面 tab（聚合/提供商/规则/虚拟模型）----
+    private var mainTab by mutableStateOf("agg")
 
     // ---- 聚合页状态 ----
     private var mainState by mutableStateOf(MainUiState())
@@ -100,6 +105,8 @@ class MainActivity : ComponentActivity() {
                     )
                     else -> MainScreen(
                         state = mainState,
+                        currentTab = mainTab,
+                        onTabChange = { mainTab = it },
                         onStart = { startGateway() },
                         onStop = { stopGateway() },
                         onPortChange = { mainState = mainState.copy(port = it) },
