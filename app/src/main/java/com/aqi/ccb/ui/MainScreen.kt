@@ -44,8 +44,16 @@ import androidx.compose.ui.unit.dp
  * 设计目标：一屏看清「网关在不在跑 / 连了哪些提供商 / 用了哪条规则 / 最近日志」。
  * 视觉沿用 rikka 的 CardGroup 分组范式，避免与提供商页风格割裂。
  */
+data class VirtualRow(
+    val name: String,
+    val memberCount: Int,
+    val ruleId: String,
+    val enabled: Boolean,
+)
+
 data class MainUiState(
     val running: Boolean = false,
+    val virtualModels: List<VirtualRow> = emptyList(),
     val port: String = "38080",
     val requests: Long = 0,
     val ok: Long = 0,
@@ -85,6 +93,8 @@ fun MainScreen(
     onEditProvider: (Int) -> Unit,
     onAddRule: () -> Unit,
     onEditRule: (String) -> Unit,
+    onAddVirtual: () -> Unit = {},
+    onEditVirtual: (String) -> Unit = {},
 ) {
     Scaffold(
         topBar = {
@@ -213,6 +223,39 @@ fun MainScreen(
                         Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
                         Spacer(Modifier.size(6.dp))
                         Text("添加提供商")
+                    }
+                }
+            }
+
+            // ==================== 虚拟模型 ====================
+            Spacer(Modifier.height(8.dp))
+            CardGroup(title = { Text("虚拟模型（${state.virtualModels.size}）") }) {
+                if (state.virtualModels.isEmpty()) {
+                    item(
+                        headlineContent = { Text("尚未创建") },
+                        supportingContent = {
+                            Text("把多个提供商的模型融合成一个自定义模型，客户端直接用它")
+                        },
+                    )
+                } else {
+                    state.virtualModels.forEach { v ->
+                        item(
+                            onClick = { onEditVirtual(v.name) },
+                            headlineContent = {
+                                Text("${v.name}${if (v.enabled) "" else "（已禁用）"}")
+                            },
+                            supportingContent = {
+                                Text("${v.memberCount} 个成员 · 规则 ${v.ruleId}")
+                            },
+                            trailingContent = { Text("›", style = MaterialTheme.typography.titleLarge) },
+                        )
+                    }
+                }
+                formItem {
+                    FilledTonalButton(onClick = onAddVirtual, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
+                        Spacer(Modifier.size(6.dp))
+                        Text("新建虚拟模型")
                     }
                 }
             }

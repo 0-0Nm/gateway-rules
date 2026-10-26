@@ -17,6 +17,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import com.aqi.ccb.data.ProviderDraft
 import com.aqi.ccb.data.ProviderRepo
+import com.aqi.ccb.data.VirtualModelDraft
+import com.aqi.ccb.data.VirtualModelRepo
+import com.aqi.ccb.gateway.VirtualModelStore
+import com.aqi.ccb.ui.VirtualModelEditScreen
 import com.aqi.ccb.gateway.ConfigStore
 import com.aqi.ccb.gateway.GateLog
 import com.aqi.ccb.gateway.FloatingBall
@@ -53,6 +57,10 @@ class MainActivity : ComponentActivity() {
     private var editingRuleId by mutableStateOf<String?>(null)
     private var ruleDraft by mutableStateOf(RuleDraft())
 
+    // ---- 虚拟模型编辑态 ----
+    private var editingVmName by mutableStateOf<String?>(null)
+    private var vmDraft by mutableStateOf(VirtualModelDraft())
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         GateLog.init(File(filesDir, "logs"))
@@ -70,6 +78,17 @@ class MainActivity : ComponentActivity() {
                         onDelete = if (editingProviderIndex >= 0) ({ deleteProvider() }) else null,
                         onTest = { testProvider() },
                         testResult = providerTest,
+                    )
+                    "vmodel" -> VirtualModelEditScreen(
+                        draft = vmDraft,
+                        isNew = editingVmName == null,
+                        providerModels = VirtualModelRepo.providerModels(this),
+                        ruleIds = ConfigStore.loadRules(this).map { it.optString("id", "default") }
+                            .ifEmpty { listOf("default") },
+                        onDraftChange = { vmDraft = it },
+                        onBack = { route = "main"; refreshMain() },
+                        onSave = { saveVirtualModel() },
+                        onDelete = if (editingVmName != null) ({ deleteVirtualModel() }) else null,
                     )
                     "rule" -> RuleEditScreen(
                         draft = ruleDraft,
@@ -97,6 +116,12 @@ class MainActivity : ComponentActivity() {
                             route = "rule"
                         },
                         onEditRule = { id -> openRule(id) },
+                        onAddVirtual = {
+                            editingVmName = null
+                            vmDraft = VirtualModelDraft()
+                            route = "vmodel"
+                        },
+                        onEditVirtual = { name -> openVirtualModel(name) },
                     )
                 }
             }
@@ -155,8 +180,18 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        val vmRows = VirtualModelRepo.list(this).map { d ->
+            com.aqi.ccb.ui.VirtualRow(
+                name = d.name,
+                memberCount = d.members.size,
+                ruleId = d.ruleId,
+                enabled = d.enabled,
+            )
+        }
+
         val s = server
         mainState = mainState.copy(
+            virtualModels = vmRows,
             running = s?.isRunning() == true,
             requests = s?.totalRequests ?: 0,
             ok = s?.totalOk ?: 0,
@@ -189,7 +224,8 @@ class MainActivity : ComponentActivity() {
         providers.forEach { policies[it.id] = it.ratePolicy }
         val limiter = RateLimiter(policies, RatePolicy())
 
-        val srv = GatewayServer(port, providers, rules, limiter, "")
+        val vmodels = VirtualModelStore.load(this)
+        val srv = GatewayServer(port, providers, rules, limiter, "", vmodels)
         if (srv.start()) {
             server = srv
             mainState = mainState.copy(statusNote = null)
@@ -363,6 +399,41 @@ class MainActivity : ComponentActivity() {
         server?.let { srv ->
             srv.update(ProviderRepo.runtimeProviders(this), ProviderRepo.runtimeRules(this))
         }
+    }
+
+    // ==================== 虚拟模型 ====================
+
+    private fun openVirtualModel(name: String) {
+        val list = VirtualModelRepo.list(this)
+        val d = list.firstOrNull { it.name == name } ?: return
+        editingVmName = name
+        vmDraft = d
+        route = "vmodel"
+    }
+
+    private fun saveVirtualModel() {
+        if (VirtualModelRepo.save(this, vmDraft)) {
+            editingVmName = null
+            vmDraft = VirtualModelDraft()
+            route = "main"
+            refreshMain()
+            server?.let { srv ->
+                srv.update(
+                    ProviderRepo.runtimeProviders(this),
+                    ProviderRepo.runtimeRules(this),
+                    VirtualModelStore.load(this),
+                )
+            }
+        }
+    }
+
+    private fun deleteVirtualModel() {
+        val name = editingVmName ?: return
+        VirtualModelRepo.delete(this, name)
+        editingVmName = null
+        vmDraft = VirtualModelDraft()
+        route = "main"
+        refreshMain()
     }
 
     private fun deleteRule() {
