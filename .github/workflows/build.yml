@@ -12,13 +12,18 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      # NOTE: android-actions/setup-android 已移除 — 它尝试安装已被官方移除的 'tools' 包会失败；
+      # ubuntu-latest runner 本身预装 Android SDK (ANDROID_HOME=/usr/local/lib/android/sdk)。
       - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
       - name: Env
         run: |
           java -version
+          gradle --version
           echo "ANDROID_HOME=$ANDROID_HOME"
           ls "$ANDROID_HOME/platforms" || true
+          ls "$ANDROID_HOME/build-tools" || true
       - name: Assemble debug
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
