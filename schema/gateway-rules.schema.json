@@ -1,0 +1,1033 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/greed/gateway/schema/gateway-rules.schema.json",
+  "title": "Gateway Rule Spec",
+  "description": "Language-neutral rule contract. Python/Kotlin/TS must all consume this same file. Version is frozen; breaking changes bump ruleSpecVersion.",
+  "type": "object",
+  "required": [
+    "ruleSpecVersion",
+    "providers",
+    "rules"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "ruleSpecVersion": {
+      "const": 1
+    },
+    "providers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Provider"
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RuleSpec"
+      }
+    }
+  },
+  "$defs": {
+    "Modality": {
+      "type": "string",
+      "enum": [
+        "TEXT",
+        "IMAGE"
+      ]
+    },
+    "ModelAbility": {
+      "type": "string",
+      "enum": [
+        "TOOL",
+        "REASONING",
+        "VISION"
+      ]
+    },
+    "ModelType": {
+      "type": "string",
+      "enum": [
+        "CHAT",
+        "IMAGE",
+        "EMBEDDING"
+      ]
+    },
+    "BuiltInTool": {
+      "type": "string",
+      "enum": [
+        "SEARCH",
+        "URL_CONTEXT",
+        "IMAGE_GENERATION"
+      ]
+    },
+    "Model": {
+      "type": "object",
+      "required": [
+        "modelId"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "modelId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/ModelType"
+        },
+        "abilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelAbility"
+          }
+        },
+        "inputModalities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Modality"
+          }
+        },
+        "outputModalities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Modality"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BuiltInTool"
+          }
+        },
+        "contextLength": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "Provider": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "baseUrl",
+        "models"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "claude",
+            "google",
+            "custom"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "baseUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "apiKeyRef": {
+          "type": "string",
+          "description": "Pointer to a secret store key. NEVER inline the secret in a rule file."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "free",
+            "paid"
+          ],
+          "default": "paid"
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1
+        },
+        "quota": {
+          "type": "number",
+          "minimum": 0
+        },
+        "customHeaders": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "value"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Model"
+          }
+        },
+        "rateLimit": {
+          "$ref": "#/$defs/RateLimit"
+        }
+      }
+    },
+    "OpCall": {
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "object"
+        }
+      },
+      "description": "Deprecated: kept for backward compatibility. Use SelectOp/ExecuteOp."
+    },
+    "RuleSpec": {
+      "type": "object",
+      "required": [
+        "id",
+        "ruleSpecVersion",
+        "select",
+        "execute"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ruleSpecVersion": {
+          "const": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "select": {
+          "type": "array",
+          "description": "Ordered pure operators applied to the candidate list.",
+          "items": {
+            "$ref": "#/$defs/SelectOp"
+          }
+        },
+        "execute": {
+          "$ref": "#/$defs/ExecuteOp"
+        },
+        "rateLimitOverride": {
+          "type": "object",
+          "description": "Rule-level rate limit override, keyed by providerId",
+          "additionalProperties": {
+            "$ref": "#/$defs/RateLimit"
+          }
+        },
+        "switchGranularity": {
+          "$ref": "#/$defs/SwitchGranularity"
+        }
+      }
+    },
+    "RateLimit": {
+      "type": "object",
+      "description": "Upstream send-rate limit (anti-fraud-control). All fields optional; omitted fields use engine defaults.",
+      "additionalProperties": false,
+      "properties": {
+        "ratePerMin": {
+          "type": "number",
+          "minimum": 0,
+          "description": "requests per minute; 0 = unlimited"
+        },
+        "burst": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "token bucket capacity (allowed spike)"
+        },
+        "minIntervalMs": {
+          "type": "number",
+          "minimum": 0,
+          "description": "minimum gap between two sends (ms), prevents burst-fire"
+        },
+        "jitterMs": {
+          "type": "number",
+          "minimum": 0,
+          "description": "random jitter before send (ms), avoids fixed-cadence detection"
+        },
+        "maxInflight": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "max concurrent in-flight requests"
+        }
+      }
+    },
+    "SelectOp": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "ab_split"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "description": "分桶键, 缺省用 ctx.session_id"
+                },
+                "buckets": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "maximum": 100,
+                  "default": 2,
+                  "description": "桶数量"
+                }
+              }
+            }
+          },
+          "description": "select operator: ab_split"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "breaker_filter"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0,
+              "description": "this operator takes no arguments"
+            }
+          },
+          "description": "select operator: breaker_filter"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "budget_cap"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "max_spend": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "单 provider 今日花费上限"
+                }
+              }
+            }
+          },
+          "description": "select operator: budget_cap"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "canary"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "percent": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "default": 10,
+                  "description": "灰度百分比 0-100"
+                },
+                "key": {
+                  "type": "string",
+                  "description": "灰度判定键, 缺省用 ctx.session_id"
+                }
+              }
+            }
+          },
+          "description": "select operator: canary"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "cheapest_first"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0,
+              "description": "this operator takes no arguments"
+            }
+          },
+          "description": "select operator: cheapest_first"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "error_rate"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "max_errors": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 5,
+                  "description": "窗口内允许的最大错误数"
+                },
+                "window_s": {
+                  "type": "number",
+                  "minimum": 1.0,
+                  "default": 300.0,
+                  "description": "滑动窗口秒数"
+                }
+              }
+            }
+          },
+          "description": "select operator: error_rate"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "fastest_first"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0,
+              "description": "this operator takes no arguments"
+            }
+          },
+          "description": "select operator: fastest_first"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "least_errors"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0,
+              "description": "this operator takes no arguments"
+            }
+          },
+          "description": "select operator: least_errors"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "lru"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0,
+              "description": "this operator takes no arguments"
+            }
+          },
+          "description": "select operator: lru"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "quota_filter"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "min_quota": {
+                  "type": "number",
+                  "minimum": 0,
+                  "default": 0.0,
+                  "description": "余额低于此值的候选剔除"
+                }
+              }
+            }
+          },
+          "description": "select operator: quota_filter"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "random"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0,
+              "description": "this operator takes no arguments"
+            }
+          },
+          "description": "select operator: random"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "require"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "tools": {
+                  "type": "boolean",
+                  "description": "要求候选模型具备 TOOL 能力"
+                },
+                "vision": {
+                  "type": "boolean",
+                  "description": "要求具备 VISION 能力"
+                },
+                "min_ctx": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "要求最小上下文长度(token)"
+                }
+              }
+            }
+          },
+          "description": "select operator: require"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "round_robin"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "description": "轮转计数器隔离键, 缺省用 rule.id"
+                }
+              }
+            }
+          },
+          "description": "select operator: round_robin"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "sticky_prefix"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "prefix": {
+                  "type": "string",
+                  "description": "前缀文本, 缺省用 ctx.prompt_prefix"
+                }
+              }
+            }
+          },
+          "description": "select operator: sticky_prefix"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "sticky_session"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0,
+              "description": "this operator takes no arguments"
+            }
+          },
+          "description": "select operator: sticky_session"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "take"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "n": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 64,
+                  "default": 1,
+                  "description": "保留前 n 个候选"
+                }
+              }
+            }
+          },
+          "description": "select operator: take"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "tier_first"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "tier": {
+                  "type": "string",
+                  "enum": [
+                    "free",
+                    "paid"
+                  ],
+                  "default": "free",
+                  "description": "优先的层级(稳定排序,不破坏其余相对序)"
+                }
+              }
+            }
+          },
+          "description": "select operator: tier_first"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "weighted_rr"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0,
+              "description": "this operator takes no arguments"
+            }
+          },
+          "description": "select operator: weighted_rr"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "args"
+          ],
+          "properties": {
+            "op": {
+              "const": "where"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "expr": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "L1 安全表达式过滤; 变量见 where 算子文档"
+                }
+              },
+              "required": [
+                "expr"
+              ]
+            }
+          },
+          "description": "select operator: where"
+        }
+      ],
+      "description": "Pure operator. Side-effect free, composable."
+    },
+    "ExecuteOp": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "circuit_breaker"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "fail_threshold": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 5,
+                  "description": "连续失败多少次转 open"
+                },
+                "success_threshold": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 2,
+                  "description": "half_open 下连续成功多少次转 closed"
+                },
+                "open_seconds": {
+                  "type": "number",
+                  "minimum": 0.01,
+                  "default": 30.0,
+                  "description": "open 持续秒数, 到期转 half_open"
+                },
+                "failover": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "open 时是否跳过该候选顺延下一个"
+                },
+                "overall_timeout": {
+                  "type": "number",
+                  "minimum": 0.001,
+                  "description": "整体超时(秒)"
+                }
+              }
+            }
+          },
+          "description": "execute operator: circuit_breaker"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "escalate"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "confidence_expr": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "L1 表达式判定是否够用; 变量 data_len/data_text/primary/model"
+                },
+                "escalate_to": {
+                  "type": "string",
+                  "description": "升级目标 providerId 列表, 逗号分隔"
+                }
+              }
+            }
+          },
+          "description": "execute operator: escalate"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "first"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "overall_timeout": {
+                  "type": "number",
+                  "minimum": 0.001,
+                  "description": "整体超时(秒)"
+                }
+              }
+            }
+          },
+          "description": "execute operator: first"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "hedge"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "hedge_ms": {
+                  "type": "number",
+                  "minimum": 1.0,
+                  "default": 200.0,
+                  "description": "首发后追加下一路的等待阈值(ms)"
+                },
+                "overall_timeout": {
+                  "type": "number",
+                  "minimum": 0.001,
+                  "description": "整体超时(秒)"
+                }
+              }
+            }
+          },
+          "description": "execute operator: hedge"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "quorum"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "k": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "需要多少路结果一致; 缺省 n//2+1"
+                },
+                "max_wait_ms": {
+                  "type": "number",
+                  "minimum": 1.0,
+                  "description": "等待一致的最长时间(ms)"
+                },
+                "overall_timeout": {
+                  "type": "number",
+                  "minimum": 0.001,
+                  "description": "整体超时(秒)"
+                }
+              }
+            }
+          },
+          "description": "execute operator: quorum"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "race"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "overall_timeout": {
+                  "type": "number",
+                  "minimum": 0.001,
+                  "description": "整体超时(秒)"
+                }
+              }
+            }
+          },
+          "description": "execute operator: race"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "retry_backoff"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "max_retries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 10,
+                  "default": 3,
+                  "description": "单候选最大重试次数"
+                },
+                "base_ms": {
+                  "type": "number",
+                  "minimum": 1.0,
+                  "default": 100.0,
+                  "description": "首次退避基数(ms)"
+                },
+                "max_ms": {
+                  "type": "number",
+                  "minimum": 1.0,
+                  "default": 2000.0,
+                  "description": "退避上限(ms)"
+                },
+                "jitter": {
+                  "type": "number",
+                  "minimum": 0.0,
+                  "maximum": 1.0,
+                  "default": 0.3,
+                  "description": "退避抖动比例 0-1"
+                },
+                "overall_timeout": {
+                  "type": "number",
+                  "minimum": 0.001,
+                  "description": "整体超时(秒)"
+                }
+              }
+            }
+          },
+          "description": "execute operator: retry_backoff"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "shadow"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "shadow_ratio": {
+                  "type": "number",
+                  "minimum": 0.0,
+                  "maximum": 1.0,
+                  "default": 1.0,
+                  "description": "影子流量抽样比例 0-1"
+                },
+                "overall_timeout": {
+                  "type": "number",
+                  "minimum": 0.001,
+                  "description": "整体超时(秒)"
+                }
+              }
+            }
+          },
+          "description": "execute operator: shadow"
+        }
+      ],
+      "description": "Exactly one execution operator per rule. Side-effecting."
+    },
+    "SwitchGranularity": {
+      "type": "string",
+      "enum": [
+        "SESSION",
+        "TURN",
+        "CALL"
+      ],
+      "default": "TURN",
+      "description": "SESSION=fixed per conversation; TURN=fixed within one user turn (incl. tool calls), recommended; CALL=switch per request, may break multi-turn tool calls"
+    }
+  }
+}
