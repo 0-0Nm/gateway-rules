@@ -75,3 +75,30 @@ MainActivity.kt         9032B  状态面板: 端口/启停/自检/日志tail; �
 ### 提交
 14bb5e0  5 个核心文件
 d92b4dd  GatewayServer + MainActivity
+
+## Turn 67 (装机验证第一轮 + 修正)
+### 云端构建全部成功
+- 40270922136 (0247e31 骨架)                success -> APK 1,210,190B
+- 40271148411 (14bb5e05 5个核心文件)         success -> APK 1,262,897B
+- 40271283472 (d92b4dd +GatewayServer+UI)   success -> APK 1,283,270B
+
+### 装机
+- artifact 12629001336 下载解压 -> app-debug.apk 3.7M
+- 复制 /storage/emulated/0/Download/gateway-rules-debug.apk
+- np_apk_install: com.aqi.ccb / GatewayRules / 3,818,187B / fresh install 成功
+
+### 发现两个真实问题(已修)
+1 **前台被抢占无法点击**: RikkaHub 始终前台, np_apk_launch 三连 recovery 仍 mismatch
+   -> 本质是设计缺陷: 网关作为常驻服务不应依赖手动点击启动
+   -> 修: MainActivity.onCreate 末尾 postDelayed 600ms 自动 startGateway()
+2 **总耗时计时起点错误**: requestEnd 用 t0Of(reqId, at)=单次尝试起点,
+   不是请求起点 -> 修: handleChat 开头记 reqStart, requestEnd 用 reqStart
+   同时删除无用的 t0Of 函数
+
+### 提交
+2126759 feat: auto-start gateway on launch; fix total-latency timing
+
+### 待验证
+- 自动启动后端口 38080 是否真的监听
+- /health /v1/models /v1/_gw/status 是否可访问
+- 日志文件是否落盘 (/data/data/com.aqi.ccb/files/logs/)
