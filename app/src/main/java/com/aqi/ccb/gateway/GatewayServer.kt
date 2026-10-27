@@ -123,6 +123,9 @@ class GatewayServer(
                 method == "GET" && path.startsWith("/health") -> {
                     writeJson(output, 200, """{"status":"ok","running":${running.get()},"port":$port}""")
                 }
+                method == "GET" && path.startsWith("/v1/_gw/diag") -> {
+                    writeJson(output, 200, diagJson())
+                }
                 method == "GET" && path.startsWith("/v1/_gw/status") -> {
                     writeJson(output, 200, statusJson())
                 }
@@ -359,6 +362,56 @@ class GatewayServer(
         val a = h["authorization"] ?: return false
         return a == "Bearer $localAuth"
     }
+
+    /**
+     * 诊断端点 —— 供外部（AI/curl）自助排查，无需人工手测。
+     * 暴露：日志目录、各配置文件路径与条目数、设置快照、限流实时状态。
+     */
+    private fun diagJson(): String {
+        val sb = StringBuilder()
+        sb.append("{\"running\":").append(running.get())
+        sb.append(",\"port\":").append(port)
+        sb.append(",\"logDir\":\"").append(esc(esc(logDirPath))).append("\"")
+        sb.append(",\"configDir\":\"").append(esc(esc(configDirPath))).append("\"")
+        sb.append(",\"providers\":").append(providers.size)
+        sb.append(",\"rules\":").append(rules.size)
+        sb.append(",\"virtualModels\":").append(virtualModels.size)
+        sb.append(",\"requests\":").append(totalRequests)
+        sb.append(",\"ok\":").append(totalOk)
+        sb.append(",\"fail\":").append(totalFail)
+        sb.append(",\"inflight\":").append(inflight.get())
+        val sw = SwitchPolicy.stats()
+        sb.append(",\"switch\":{\"bindings\":").append(sw["bindings"])
+        sb.append(",\"sessions\":").append(sw["sessions"]).append("}")
+        // 限流实时
+        sb.append(",\"rate\":[")
+        providers.forEachIndexed { i, p ->
+            if (i > 0) sb.append(",")
+            sb.append("{\"id\":\"").append(esc(esc(p.id))).append("\",")
+            sb.append("\"peek\":").append(peekJson(p.id)).append("}")
+        }
+        sb.append("]")
+        // provider 明细（含 breaker）
+        sb.append(",\"providerDetail\":[")
+        providers.forEachIndexed { i, p ->
+            if (i > 0) sb.append(",")
+            sb.append("{\"id\":\"").append(esc(esc(p.id))).append("\"")
+            sb.append(",\"enabled\":").append(p.enabled)
+            sb.append(",\"breaker\":\"").append(p.breaker).append("\"")
+            sb.append(",\"errors\":").append(p.errors)
+            sb.append(",\"models\":").append(p.models.size)
+            sb.append(",\"ratePerMin\":").append(p.ratePolicy.ratePerMin)
+            sb.append(",\"minIntervalMs\":").append(p.ratePolicy.minIntervalMs)
+            sb.append(",\"maxInflight\":").append(p.ratePolicy.maxInflight)
+            sb.append("}")
+        }
+        sb.append("]}")
+        return sb.toString()
+    }
+
+    /** 日志目录（由 MainActivity 注入，供 diag 暴露） */
+    @Volatile var logDirPath: String = ""
+    @Volatile var configDirPath: String = ""
 
     private fun statusJson(): String {
         val ps = providers.joinToString(",") { p ->
