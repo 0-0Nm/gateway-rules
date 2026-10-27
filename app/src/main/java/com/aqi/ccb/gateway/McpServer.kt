@@ -6,6 +6,7 @@ import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.Executors
@@ -43,11 +44,37 @@ class McpServer(
 
     @Volatile var lastError: String? = null
     @Volatile var totalCalls: Long = 0
+    @Volatile var totalErrors: Long = 0
+    @Volatile var lastCallAt: Long = 0L
+    @Volatile var lastMethod: String = ""
+    @Volatile var lastClient: String = ""
+    @Volatile var lastLatencyMs: Long = 0L
+    @Volatile var lastResult: String = ""
+
+    /** 供设置页显示的状态快照 */
+    fun snapshot(): Map<String, Any?> = mapOf(
+        "running" to running.get(),
+        "port" to port,
+        "gatewayPort" to gatewayPort,
+        "url" to "http://127.0.0.1:$port/mcp",
+        "calls" to totalCalls,
+        "errors" to totalErrors,
+        "lastMethod" to lastMethod,
+        "lastClient" to lastClient,
+        "lastLatencyMs" to lastLatencyMs,
+        "lastResult" to lastResult,
+        "lastCallAt" to lastCallAt,
+        "lastError" to lastError,
+    )
 
     fun start(): Boolean {
         if (running.get()) return true
         return try {
-            val ss = ServerSocket(port)
+            // 关键修复：ServerSocket(port) 在某些 Android 上只绑 [::]（IPv6-only），
+            // 导致客户端用 127.0.0.1 连不上。显式绑 0.0.0.0 保证 IPv4 + IPv6 双栈可用。
+            val ss = ServerSocket()
+            ss.reuseAddress = true
+            ss.bind(java.net.InetSocketAddress(java.net.InetAddress.getByName("0.0.0.0"), port))
             serverSocket = ss
             running.set(true)
             acceptThread = Thread({
@@ -114,13 +141,30 @@ class McpServer(
             }
 
             if (method != "POST" || !path.startsWith("/mcp")) {
+                GateLog.warn("mcp", "reject " + method + " " + path + " from=" + socket.inetAddress?.hostAddress)
                 writeJson(output, 404, """{"error":"not found"}""")
                 return
             }
 
             totalCalls++
+            lastCallAt = System.currentTimeMillis()
+            lastClient = socket.inetAddress?.hostAddress ?: "?"
             val reqStr = String(body, Charsets.UTF_8)
+            val m0 = System.currentTimeMillis()
+            val rpcMethod = runCatching {
+                JSONObject(reqStr).optString("method")
+            }.getOrDefault("?")
+            lastMethod = rpcMethod
             val resp = handleRpc(reqStr)
+            lastLatencyMs = System.currentTimeMillis() - m0
+            val isErr = resp.contains("\"error\"")
+            lastResult = if (isErr) "error" else "ok"
+            if (isErr) totalErrors++
+            GateLog.info(
+                "mcp", "rpc " + rpcMethod + " -> " + lastResult +
+                    " " + lastLatencyMs + "ms from=" + lastClient +
+                    " bytes=" + body.size
+            )
             writeJson(output, 200, resp)
         } catch (e: Exception) {
             GateLog.error("mcp", "handle error", e)
