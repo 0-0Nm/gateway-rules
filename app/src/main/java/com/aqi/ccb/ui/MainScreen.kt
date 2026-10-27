@@ -28,6 +28,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -54,6 +55,8 @@ data class VirtualRow(
 data class MainUiState(
     val running: Boolean = false,
     val virtualModels: List<VirtualRow> = emptyList(),
+    val floatAlpha: Int = 80,
+    val floatLocked: Boolean = false,
     val port: String = "38080",
     val requests: Long = 0,
     val ok: Long = 0,
@@ -97,6 +100,7 @@ fun MainScreen(
     onEditRule: (String) -> Unit,
     onAddVirtual: () -> Unit = {},
     onEditVirtual: (String) -> Unit = {},
+    onFloatAlpha: (Int) -> Unit = {},
 ) {
     Scaffold(
         topBar = {
@@ -203,6 +207,27 @@ fun MainScreen(
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
+                }
+            }
+            }
+
+            // ==================== 悬浮窗（聚合 tab）====================
+            if (currentTab == "agg") {
+            Spacer(Modifier.height(8.dp))
+            CardGroup(title = { Text("悬浮窗") }) {
+                formItem(
+                    headlineContent = { Text("透明度 ${state.floatAlpha}%") },
+                    supportingContent = {
+                        Text(if (state.floatLocked) "已锁定（单击悬浮球解锁）" else "单击悬浮球锁定 · 长按拖动位置")
+                    },
+                ) {
+                    Slider(
+                        value = state.floatAlpha.toFloat(),
+                        onValueChange = { onFloatAlpha(it.toInt()) },
+                        valueRange = 10f..100f,
+                        steps = 17,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
             }
