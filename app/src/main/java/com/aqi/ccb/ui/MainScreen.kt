@@ -129,6 +129,7 @@ fun MainScreen(
                     TabItem("providers", "提供商"),
                     TabItem("rules", "规则"),
                     TabItem("vmodels", "虚拟模型"),
+                    TabItem("settings", "设置"),
                 ),
                 selected = currentTab,
                 onSelect = onTabChange,
