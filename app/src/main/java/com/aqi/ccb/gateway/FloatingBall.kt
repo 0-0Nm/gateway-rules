@@ -71,9 +71,9 @@ object FloatingBall {
                 textSize = 11f
                 setTextColor(colorFor(currentState))
                 setPadding(24, 16, 24, 16)
-                setBackgroundResource(android.R.drawable.dialog_frame)
                 alpha = alphaPercent / 100f
             }
+            applyBorder(tv)
             val p = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -157,8 +157,8 @@ object FloatingBall {
         locked = !locked
         prefs.edit().putBoolean(KEY_LOCKED, locked).apply()
         view?.let { v ->
-            v.alpha = (alphaPercent / 100f) * if (locked) 1f else 1f
             v.text = label()
+            applyBorder(v)
         }
         GateLog.info("float", if (locked) "locked" else "unlocked")
     }
@@ -197,7 +197,16 @@ object FloatingBall {
 
     fun currentState(): String = currentState
 
-    private fun label(): String = "● " + currentState + (if (locked) " 🔒" else "")
+    private fun label(): String = "● " + currentState
+
+    /** 锁定 = 无边框（透明背景）；解锁 = 带背景框，便于发现和拖动 */
+    private fun applyBorder(v: TextView) {
+        if (locked) {
+            v.setBackgroundColor(0x00000000)   // 完全透明 = 无边框
+        } else {
+            v.setBackgroundResource(android.R.drawable.dialog_frame)
+        }
+    }
 
     private fun colorFor(state: String): Int = when (state) {
         STATE_RUNNING -> 0xFF2196F3.toInt()   // 蓝
