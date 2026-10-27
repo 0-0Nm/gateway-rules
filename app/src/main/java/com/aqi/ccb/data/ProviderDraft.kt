@@ -5,14 +5,19 @@ import org.json.JSONObject
 
 /**
  * ProviderDraft —— UI 编辑态。
+ *
  * 与运行时 [com.aqi.ccb.gateway.Provider] 分离：UI 里允许临时的空值/半填状态，
  * 落盘前才校验并转成严格契约对象。
+ *
+ * 模型现在是结构化列表 [models]，不再是逗号串 —— 这样才能逐模型显示
+ * 延迟 / 可用性 / 三件套结果，并支持批量测试。
  */
 data class ProviderDraft(
     val name: String = "",
     val baseUrl: String = "",
     val apiKey: String = "",
-    val modelId: String = "",
+    /** 结构化模型列表（替代原来的逗号串 modelId） */
+    val models: List<ModelInfo> = emptyList(),
     // 限流（project 特有，UI 里可直接调）
     val ratePerMin: String = "30",
     val burst: String = "3",
@@ -21,13 +26,17 @@ data class ProviderDraft(
     val maxInflight: String = "2",
     val enabled: Boolean = true,
     val tier: String = "free",
-    /** 三件套探测结果摘要（UI 展示用，不落盘） */
+    /** 三件套探测结果摘要（UI 展示用） */
     val probeResult: String = "",
     /** baseUrl 后缀类型：AUTO / OPENAI / GOOGLE / OPENAI_COMPAT / ALIYUN / INPUT */
     val suffixStyle: String = "AUTO",
-    /** 探测到的模型列表（逗号分隔，仅 UI 展示） */
-    val probedModels: String = ""
+    /** 批量测试进度：已测/总数 */
+    val testingProgress: String = "",
 ) {
+    /** 兼容旧代码的模型 ID 串（内部使用，展示请用 models） */
+    val modelId: String
+        get() = models.joinToString(",") { it.modelId }
+
     fun idOr(nameFallback: String = "provider"): String =
         (name.ifBlank { nameFallback })
             .lowercase()
@@ -36,20 +45,11 @@ data class ProviderDraft(
             .ifEmpty { "provider" }
 
     val isComplete: Boolean
-        get() = name.isNotBlank() && baseUrl.isNotBlank() && modelId.isNotBlank()
+        get() = name.isNotBlank() && baseUrl.isNotBlank() && models.isNotEmpty()
 
     fun toJson(): JSONObject {
-        val models = JSONArray()
-        modelId.split(',', '\n', ' ')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .forEach { mid ->
-                models.put(JSONObject().apply {
-                    put("modelId", mid)
-                    put("abilities", JSONArray().put("TOOL"))
-                    put("contextLength", 128000)
-                })
-            }
+        val modelsArr = JSONArray()
+        models.forEach { modelsArr.put(it.toJson()) }
         return JSONObject().apply {
             put("id", idOr())
             put("name", name.ifBlank { idOr() })
@@ -59,7 +59,7 @@ data class ProviderDraft(
             put("tier", tier)
             put("weight", 1)
             if (apiKey.isNotEmpty()) put("apiKeyRef", "ref-" + idOr())
-            put("models", models)
+            put("models", modelsArr)
             put("rateLimit", JSONObject().apply {
                 put("ratePerMin", ratePerMin.toIntOrNull() ?: 30)
                 put("burst", burst.toIntOrNull() ?: 3)
@@ -67,29 +67,35 @@ data class ProviderDraft(
                 put("jitterMs", jitterMs.toIntOrNull() ?: 150)
                 put("maxInflight", maxInflight.toIntOrNull() ?: 2)
             })
+            put("suffixStyle", suffixStyle)
         }
     }
 
     companion object {
         fun fromJson(o: JSONObject): ProviderDraft {
-            val models = o.optJSONArray("models")
-            val ids = if (models == null) "" else (0 until models.length())
-                .mapNotNull { models.optJSONObject(it)?.optString("modelId") }
-                .filter { it.isNotBlank() }
-                .joinToString(",")
+            // 优先读结构化 models；否则回退兼容旧的逗号串
+            val models = o.optJSONArray("models")?.let { arr ->
+                (0 until arr.length()).mapNotNull { i ->
+                    arr.optJSONObject(i)?.let { m ->
+                        if (m.has("modelId")) ModelInfo.fromJson(m) else null
+                    }
+                }
+            } ?: emptyList()
+
             val rl = o.optJSONObject("rateLimit")
             return ProviderDraft(
                 name = o.optString("name", ""),
                 baseUrl = o.optString("baseUrl", ""),
-                apiKey = "",   // 密钥单独从 keys.json 取，不回填到 UI 明文
-                modelId = ids,
+                apiKey = "",
+                models = models,
                 ratePerMin = (rl?.optInt("ratePerMin", 30) ?: 30).toString(),
                 burst = (rl?.optInt("burst", 3) ?: 3).toString(),
                 minIntervalMs = (rl?.optInt("minIntervalMs", 800) ?: 800).toString(),
                 jitterMs = (rl?.optInt("jitterMs", 150) ?: 150).toString(),
                 maxInflight = (rl?.optInt("maxInflight", 2) ?: 2).toString(),
                 enabled = o.optBoolean("enabled", true),
-                tier = o.optString("tier", "free")
+                tier = o.optString("tier", "free"),
+                suffixStyle = o.optString("suffixStyle", "AUTO"),
             )
         }
     }
