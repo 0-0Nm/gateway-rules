@@ -1,6 +1,8 @@
 package com.aqi.ccb.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,10 +18,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -39,7 +45,16 @@ data class SettingsState(
     val mcpPort: String = "38081",
     val toastEnabled: Boolean = true,
     val mcpRunning: Boolean = false,
-)
+    // ---- MCP 状态检测 ----
+    val mcpCalls: Long = 0,
+    val mcpErrors: Long = 0,
+    val mcpLastMethod: String = "",
+    val mcpLastLatencyMs: Long = 0,
+    val mcpLastResult: String = "",
+    val mcpLastError: String? = null,
+) {
+    val mcpUrl: String get() = "http://127.0.0.1:$mcpPort/mcp"
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,6 +66,7 @@ fun SettingsScreen(
     onMcpPort: (String) -> Unit,
     onToastToggle: (Boolean) -> Unit,
     onBack: () -> Unit = {},
+    onMcpCopyRaw: (() -> Unit)? = null,
 ) {
     Scaffold(
         topBar = {
@@ -129,6 +145,84 @@ fun SettingsScreen(
                         },
                     )
                 }
+                // ---- 状态检测 ----
+                item(
+                    headlineContent = {
+                        Text(
+                            when {
+                                !state.mcpEnabled -> "状态：已关闭"
+                                state.mcpRunning -> "状态：运行中 ✓"
+                                else -> "状态：未启动 ✗"
+                            }
+                        )
+                    },
+                    supportingContent = {
+                        Text(
+                            if (state.mcpRunning)
+                                "调用 ${state.mcpCalls} 次 · 失败 ${state.mcpErrors} 次" +
+                                    (if (state.mcpLastMethod.isNotEmpty())
+                                        " · 最近 ${state.mcpLastMethod} ${state.mcpLastLatencyMs}ms"
+                                    else "")
+                            else if (state.mcpEnabled)
+                                "已启用但未启动，检查端口是否被占用"
+                            else "打开上方开关以启用"
+                        )
+                    },
+                    leadingContent = {
+                        CardGroupIcon(
+                            icon = Icons.Filled.Settings,
+                            containerColor = if (state.mcpRunning)
+                                MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceContainerHighest,
+                        )
+                    },
+                )
+
+                // ---- 可复制的 MCP 地址 ----
+                formItem(
+                    headlineContent = { Text("MCP 地址（点击复制）") },
+                    supportingContent = {
+                        Text("客户端 Base URL 填这个；MCP 类型选 HTTP / Streamable HTTP")
+                    },
+                ) {
+                    val clipboard = LocalClipboardManager.current
+                    val ctx = LocalContext.current
+                    Column {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = state.mcpUrl,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontFamily = MonoFont
+                                ),
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                clipboard.setText(AnnotatedString(state.mcpUrl))
+                                UiToast.show("已复制：" + state.mcpUrl)
+                            }) { Text("复制地址") }
+                            OutlinedButton(onClick = onMcpCopyRaw ?: {}) {
+                                Text("复制配置 JSON")
+                            }
+                        }
+                    }
+                }
+
+                state.mcpLastError?.let { err ->
+                    item(
+                        headlineContent = { Text("最近错误") },
+                        supportingContent = {
+                            Text(err, color = MaterialTheme.colorScheme.error)
+                        },
+                    )
+                }
+
                 item(
                     headlineContent = { Text("可用工具") },
                     supportingContent = {
