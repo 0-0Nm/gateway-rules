@@ -83,6 +83,10 @@ class MainActivity : ComponentActivity() {
                         onSave = { saveProvider() },
                         onDelete = if (editingProviderIndex >= 0) ({ deleteProvider() }) else null,
                         onTest = { testProvider() },
+                        onProbeModels = { probeModels() },
+                        onSuffixChange = { st ->
+                            providerDraft = providerDraft.copy(suffixStyle = st)
+                        },
                         testResult = providerTest,
                     )
                     "vmodel" -> VirtualModelEditScreen(
@@ -296,6 +300,64 @@ class MainActivity : ComponentActivity() {
         providerDraft = ProviderDraft()
         route = "main"
         refreshMain()
+    }
+
+    /**
+     * 探测模型 —— 先按 suffixStyle 决定端点，再拉 /models 列表。
+     * AUTO 模式下依次尝试 /v1、/v1beta、/openai、/compatible-mode/v1。
+     */
+    private fun probeModels() {
+        val d = providerDraft
+        if (!d.baseUrl.startsWith("http")) {
+            providerTest = "Base URL 需以 http(s):// 开头"
+            return
+        }
+        providerTest = "探测中…"
+        Thread {
+            val results = StringBuilder()
+            var resolvedBase: String? = null
+            var modelList: List<String> = emptyList()
+
+            if (d.suffixStyle == "AUTO") {
+                val r = com.aqi.ccb.gateway.BaseUrlProbe.probe(d.baseUrl, d.apiKey)
+                if (r.ok) {
+                    resolvedBase = r.resolvedUrl
+                    results.append(r.summary())
+                    modelList = com.aqi.ccb.gateway.BaseUrlProbe
+                        .listModels(r.resolvedUrl!!, d.apiKey)
+                } else {
+                    results.append(r.summary())
+                }
+            } else {
+                // 手动指定：按类型拼后缀
+                val base = when (d.suffixStyle) {
+                    "OPENAI" -> d.baseUrl.trimEnd('/') + "/v1"
+                    "GOOGLE" -> d.baseUrl.trimEnd('/') + "/v1beta"
+                    "OPENAI_COMPAT" -> d.baseUrl.trimEnd('/') + "/openai"
+                    "ALIYUN" -> d.baseUrl.trimEnd('/') + "/compatible-mode/v1"
+                    else -> d.baseUrl.trimEnd('/')
+                }
+                modelList = com.aqi.ccb.gateway.BaseUrlProbe.listModels(base, d.apiKey)
+                if (modelList.isNotEmpty()) {
+                    resolvedBase = base
+                    results.append("可用：").append(base)
+                        .append(" · 发现 ").append(modelList.size).append(" 个模型")
+                } else {
+                    results.append("失败：").append(base).append(" 无模型列表")
+                }
+            }
+
+            ui.post {
+                if (resolvedBase != null) {
+                    providerDraft = providerDraft.copy(
+                        baseUrl = resolvedBase!!,
+                        probedModels = modelList.joinToString(","),
+                        modelId = if (modelList.isNotEmpty()) modelList.first() else providerDraft.modelId,
+                    )
+                }
+                providerTest = results.toString()
+            }
+        }.start()
     }
 
     /**
