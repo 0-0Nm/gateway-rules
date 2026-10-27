@@ -204,7 +204,7 @@ class McpBridge(private val context: Context) : McpConfig {
         put("gatewayPort", gatewayPort)
         put("mcpPort", AppSettings.mcpPort(context))
         put("providers", ProviderRepo.list(context).size)
-        put("rules", ConfigStore.loadRules(context).length())
+        put("rules", ConfigStore.loadRules(context).size)
         put("virtualModels", VirtualModelStore.load(context).size)
         put("switch", JSONObject().apply {
             put("bindings", com.aqi.ccb.gateway.SwitchPolicy.stats()["bindings"] ?: 0)
