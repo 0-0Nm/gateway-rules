@@ -36,6 +36,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -64,6 +65,8 @@ fun ProviderEditScreen(
     onDelete: (() -> Unit)?,
     onTest: (() -> Unit)?,
     onProbeModels: (() -> Unit)? = null,
+    onTestAll: (() -> Unit)? = null,
+    onToggleModel: ((String) -> Unit)? = null,
     onSuffixChange: ((String) -> Unit)? = null,
     testResult: String?,
 ) {
@@ -113,13 +116,27 @@ fun ProviderEditScreen(
                     secret = true,
                     maxLines = 3,
                 )
-                textFieldItem(
-                    label = "模型 ID",
-                    value = draft.modelId,
-                    onValueChange = { onDraftChange(draft.copy(modelId = it.trim())) },
-                    supportingText = { Text("可点下方「探测模型」自动获取，多个用英文逗号分隔") },
-                    monospace = true,
-                )
+                formItem(
+                    headlineContent = { Text("模型（${draft.models.size} 个）") },
+                    supportingContent = { Text("点下方「探测模型」自动获取，每个模型可单独测试与启停") },
+                ) {
+                    if (draft.models.isEmpty()) {
+                        Text(
+                            "暂无模型",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            draft.models.forEach { m ->
+                                ModelRow(
+                                    model = m,
+                                    onToggle = { onToggleModel?.invoke(m.modelId) },
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             // ---------- 端点类型（后缀自动探测）----------
@@ -186,7 +203,25 @@ fun ProviderEditScreen(
                     }
                 }
 
-                formItem(headlineContent = { Text("② 连接测试（非流式/流式/工具）") }) {
+                formItem(
+                    headlineContent = {
+                        Text("② 批量测试（逐模型测延迟+可用性）")
+                    },
+                    supportingContent = {
+                        if (draft.testingProgress.isNotEmpty())
+                            Text("测试中 ${draft.testingProgress}")
+                        else
+                            Text("结果会显示在下方每个模型右侧")
+                    },
+                ) {
+                    OutlinedButton(
+                        onClick = { onTestAll?.invoke() },
+                        enabled = draft.baseUrl.isValidHttpUrl() && draft.models.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("批量测试全部模型") }
+                }
+
+                formItem(headlineContent = { Text("③ 连接测试（非流式/流式/工具）") }) {
                     Column {
                         OutlinedButton(
                             onClick = { onTest?.invoke() },
@@ -302,6 +337,46 @@ internal fun CardGroupScope.textFieldItem(
             }
         } else null,
     )
+}
+
+// ==================== 模型行（逐模型状态）====================
+
+/**
+ * 单个模型行：名称 + 状态徽标（未测 / 1200ms / 失败原因） + 启停开关。
+ * 对应需求「直接把延迟和可用性显示在单个模型块底下」。
+ */
+@Composable
+internal fun ModelRow(
+    model: com.aqi.ccb.data.ModelInfo,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = model.modelId,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFont),
+                color = if (model.enabled)
+                    MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = model.statusLabel() +
+                    (if (model.lastError.isNotEmpty()) " · ${model.lastError}" else "") +
+                    (if (model.abilities.isNotEmpty()) " · ${model.abilities.joinToString(",")}" else ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = when {
+                    model.available == true -> Color(0xFF2E7D32)     // 绿
+                    model.available == false -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        Checkbox(checked = model.enabled, onCheckedChange = { onToggle() })
+    }
 }
 
 // ==================== 小工具 ====================
