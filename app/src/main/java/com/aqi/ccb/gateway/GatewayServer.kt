@@ -50,7 +50,10 @@ class GatewayServer(
     fun start(): Boolean {
         if (running.get()) return true
         return try {
-            val ss = ServerSocket(port)
+            // 同 McpServer：显式绑 0.0.0.0，避免 IPv6-only 导致 127.0.0.1 连不上
+            val ss = ServerSocket()
+            ss.reuseAddress = true
+            ss.bind(java.net.InetSocketAddress(java.net.InetAddress.getByName("0.0.0.0"), port))
             serverSocket = ss
             running.set(true)
             acceptThread = Thread({
