@@ -32,7 +32,14 @@ class GatewayServer(
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
-    private val pool = Executors.newFixedThreadPool(8)
+    // 修复假死：原来 fixed(8) + 无容量控制，慢请求（上游 120s）堆满后
+    // accept 仍继续但无工作线程，表现为整个网关无响应（连 /health 都挂）。
+    // 改为 cached 池并封顶 64，慢请求不会阻塞新连接的短请求。
+    private val pool = java.util.concurrent.ThreadPoolExecutor(
+        4, 64, 60L, java.util.concurrent.TimeUnit.SECONDS,
+        java.util.concurrent.SynchronousQueue(),
+        java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy()
+    )
     private val inflight = AtomicInteger(0)
 
     @Volatile var lastError: String? = null
@@ -90,7 +97,7 @@ class GatewayServer(
         val reqId = "r-" + UUID.randomUUID().toString().take(8)
         val t0 = System.currentTimeMillis()
         try {
-            socket.soTimeout = 120_000
+            socket.soTimeout = 30_000   // 客户端读请求头/体，30s 足够，避免长挂占线程
             val input = BufferedInputStream(socket.getInputStream())
             val output = socket.getOutputStream()
 
@@ -291,7 +298,7 @@ class GatewayServer(
         conn.requestMethod = "POST"
         conn.doOutput = true
         conn.connectTimeout = 20_000
-        conn.readTimeout = 120_000
+        conn.readTimeout = 90_000
         conn.setRequestProperty("Content-Type", "application/json")
         conn.setRequestProperty("Accept", "text/event-stream, application/json")
         val key = SecretStore.resolve(c.p)
