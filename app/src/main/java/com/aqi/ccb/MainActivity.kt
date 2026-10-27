@@ -21,6 +21,8 @@ import com.aqi.ccb.data.VirtualModelDraft
 import com.aqi.ccb.data.VirtualModelRepo
 import com.aqi.ccb.gateway.VirtualModelStore
 import com.aqi.ccb.ui.VirtualModelEditScreen
+import com.aqi.ccb.ui.SettingsScreen
+import com.aqi.ccb.ui.SettingsState
 import com.aqi.ccb.ui.PagerTabs
 import com.aqi.ccb.ui.TabItem
 import com.aqi.ccb.gateway.ConfigStore
@@ -28,6 +30,11 @@ import com.aqi.ccb.gateway.GateLog
 import com.aqi.ccb.gateway.FloatingBall
 import com.aqi.ccb.gateway.GatewayServer
 import com.aqi.ccb.gateway.ModelProbe
+import com.aqi.ccb.gateway.BatchTester
+import com.aqi.ccb.gateway.McpServer
+import com.aqi.ccb.data.AppSettings
+import com.aqi.ccb.data.McpBridge
+import com.aqi.ccb.data.ModelInfo
 import com.aqi.ccb.gateway.RateLimiter
 import com.aqi.ccb.gateway.RatePolicy
 import com.aqi.ccb.ui.MainScreen
@@ -44,6 +51,7 @@ import java.io.File
 class MainActivity : ComponentActivity() {
 
     private var server: GatewayServer? = null
+    private var mcpServer: McpServer? = null
     private val ui = Handler(Looper.getMainLooper())
 
     // ---- 顶层导航状态 ----
@@ -84,10 +92,48 @@ class MainActivity : ComponentActivity() {
                         onDelete = if (editingProviderIndex >= 0) ({ deleteProvider() }) else null,
                         onTest = { testProvider() },
                         onProbeModels = { probeModels() },
+                        onTestAll = { testAllModels() },
+                        onToggleModel = { mid ->
+                            val cur = providerDraft.models.toMutableList()
+                            val i = cur.indexOfFirst { it.modelId == mid }
+                            if (i >= 0) {
+                                cur[i] = cur[i].copy(enabled = !cur[i].enabled)
+                                providerDraft = providerDraft.copy(models = cur)
+                            }
+                        },
                         onSuffixChange = { st ->
                             providerDraft = providerDraft.copy(suffixStyle = st)
                         },
                         testResult = providerTest,
+                    )
+                    "settings" -> SettingsScreen(
+                        state = SettingsState(
+                            gatewayPort = mainState.port,
+                            floatEnabled = AppSettings.floatEnabled(this),
+                            mcpEnabled = AppSettings.mcpEnabled(this),
+                            mcpPort = AppSettings.mcpPort(this).toString(),
+                            toastEnabled = AppSettings.toastEnabled(this),
+                            mcpRunning = mcpServer?.isRunning() == true,
+                        ),
+                        onGatewayPort = { p ->
+                            mainState = mainState.copy(port = p)
+                            AppSettings.setGatewayPort(this, p.toIntOrNull() ?: 38080)
+                        },
+                        onFloatToggle = { v ->
+                            AppSettings.setFloatEnabled(this, v)
+                            if (v && server?.isRunning() == true) {
+                                FloatingBall.attach(this)
+                            } else if (!v) {
+                                FloatingBall.detach()
+                            }
+                            route = route  // 触发重组
+                        },
+                        onMcpToggle = { v -> toggleMcp(v) },
+                        onMcpPort = { p ->
+                            val port = p.toIntOrNull() ?: 38081
+                            setMcpPort(port)
+                        },
+                        onToastToggle = { v -> AppSettings.setToastEnabled(this, v) },
                     )
                     "vmodel" -> VirtualModelEditScreen(
                         draft = vmDraft,
@@ -111,7 +157,13 @@ class MainActivity : ComponentActivity() {
                     else -> MainScreen(
                         state = mainState,
                         currentTab = mainTab,
-                        onTabChange = { mainTab = it },
+                        onTabChange = { tab ->
+                            if (tab == "settings") {
+                                route = "settings"
+                            } else {
+                                mainTab = tab
+                            }
+                        },
                         onStart = { startGateway() },
                         onStop = { stopGateway() },
                         onPortChange = { mainState = mainState.copy(port = it) },
@@ -156,6 +208,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
         server?.stop()
+        mcpServer?.stop()
         FloatingBall.detach()
         super.onDestroy()
     }
@@ -247,8 +300,11 @@ class MainActivity : ComponentActivity() {
         if (srv.start()) {
             server = srv
             mainState = mainState.copy(statusNote = null)
-            FloatingBall.attach(this)
-            FloatingBall.setState(FloatingBall.STATE_IDLE)
+            if (AppSettings.floatEnabled(this)) {
+                FloatingBall.attach(this)
+                FloatingBall.setState(FloatingBall.STATE_IDLE)
+            }
+            startMcpIfEnabled()
         } else {
             mainState = mainState.copy(statusNote = "启动失败：${srv.lastError}（端口被占用？）")
         }
@@ -302,6 +358,84 @@ class MainActivity : ComponentActivity() {
         refreshMain()
     }
 
+    // ==================== MCP ====================
+
+    private fun startMcpIfEnabled() {
+        if (!AppSettings.mcpEnabled(this)) {
+            mcpServer?.stop()
+            mcpServer = null
+            return
+        }
+        if (mcpServer?.isRunning() == true) return
+        val port = AppSettings.mcpPort(this)
+        val srv = McpServer(port, mainState.port.toIntOrNull() ?: 38080) { McpBridge(this) }
+        if (srv.start()) {
+            mcpServer = srv
+        }
+    }
+
+    fun toggleMcp(enabled: Boolean) {
+        AppSettings.setMcpEnabled(this, enabled)
+        if (enabled) startMcpIfEnabled() else { mcpServer?.stop(); mcpServer = null }
+    }
+
+    fun setMcpPort(port: Int) {
+        AppSettings.setMcpPort(this, port)
+        if (AppSettings.mcpEnabled(this)) {
+            mcpServer?.stop()
+            mcpServer = null
+            startMcpIfEnabled()
+        }
+    }
+
+    // ==================== 批量测试 ====================
+
+    /** 批量测试当前提供商的所有模型（进度回填到 draft.testingProgress） */
+    private fun testAllModels() {
+        val d = providerDraft
+        if (d.models.isEmpty()) {
+            providerTest = "没有模型可测，先点『探测模型』"
+            return
+        }
+        if (!d.baseUrl.startsWith("http")) {
+            providerTest = "Base URL 需以 http(s):// 开头"
+            return
+        }
+        providerDraft = providerDraft.copy(testingProgress = "0/${d.models.size}")
+        providerTest = "批量测试中…"
+
+        val current = d.models.toList()
+        // 用固定线程池并发测，最多 4 并发，避免打爆上游
+        BatchTester.testAll(
+            baseUrl = d.baseUrl,
+            apiKey = d.apiKey,
+            models = current,
+            concurrency = 4,
+            onItem = { tested ->
+                ui.post {
+                    val cur = providerDraft.models.toMutableList()
+                    val idx = cur.indexOfFirst { it.modelId == tested.modelId }
+                    if (idx >= 0) {
+                        cur[idx] = tested
+                        providerDraft = providerDraft.copy(models = cur)
+                    }
+                }
+            },
+            onProgress = { prog ->
+                ui.post {
+                    providerDraft = providerDraft.copy(
+                        testingProgress = "${prog.done}/${prog.total}"
+                    )
+                    if (prog.finished) {
+                        val ok = providerDraft.models.count { it.available == true }
+                        providerTest = "测试完成：$ok / ${prog.total} 可用"
+                        providerDraft = providerDraft.copy(testingProgress = "")
+                    }
+                }
+            },
+        )
+    }
+
     /**
      * 探测模型 —— 先按 suffixStyle 决定端点，再拉 /models 列表。
      * AUTO 模式下依次尝试 /v1、/v1beta、/openai、/compatible-mode/v1。
@@ -348,11 +482,15 @@ class MainActivity : ComponentActivity() {
             }
 
             ui.post {
-                if (resolvedBase != null) {
+                if (resolvedBase != null && modelList.isNotEmpty()) {
+                    // 保留已测过的模型结果，新发现的补进来
+                    val old = providerDraft.models.associateBy { it.modelId }
+                    val merged = modelList.map { id ->
+                        old[id] ?: ModelInfo(modelId = id)
+                    }
                     providerDraft = providerDraft.copy(
                         baseUrl = resolvedBase!!,
-                        probedModels = modelList.joinToString(","),
-                        modelId = if (modelList.isNotEmpty()) modelList.first() else providerDraft.modelId,
+                        models = merged,
                     )
                 }
                 providerTest = results.toString()
@@ -373,14 +511,16 @@ class MainActivity : ComponentActivity() {
         providerTest = "测试中…（非流式/流式/工具）"
         Thread {
             // 没填模型就先去拉列表
-            var modelId = d.modelId.split(',', ' ').firstOrNull { it.isNotBlank() } ?: ""
+            var modelId = d.models.firstOrNull()?.modelId ?: ""
             if (modelId.isEmpty()) {
                 val ids = runCatching { fetchModelIds(d.baseUrl.trimEnd('/'), d.apiKey) }.getOrNull()
                 if (ids != null && !ids.startsWith("ERR:") && ids.isNotBlank()) {
                     val list = ids.split("\n").filter { it.isNotBlank() }
                     modelId = list.firstOrNull() ?: ""
                     ui.post {
-                        providerDraft = providerDraft.copy(modelId = list.joinToString(","))
+                        providerDraft = providerDraft.copy(
+                            models = list.map { ModelInfo(modelId = it) }
+                        )
                     }
                 }
             }
