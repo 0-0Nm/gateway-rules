@@ -27,6 +27,7 @@ import com.aqi.ccb.gateway.ConfigStore
 import com.aqi.ccb.gateway.GateLog
 import com.aqi.ccb.gateway.FloatingBall
 import com.aqi.ccb.gateway.GatewayServer
+import com.aqi.ccb.gateway.ModelProbe
 import com.aqi.ccb.gateway.RateLimiter
 import com.aqi.ccb.gateway.RatePolicy
 import com.aqi.ccb.ui.MainScreen
@@ -110,6 +111,10 @@ class MainActivity : ComponentActivity() {
                         onStart = { startGateway() },
                         onStop = { stopGateway() },
                         onPortChange = { mainState = mainState.copy(port = it) },
+                        onFloatAlpha = { pct ->
+                            com.aqi.ccb.gateway.FloatingBall.setAlphaPercent(pct)
+                            mainState = mainState.copy(floatAlpha = pct)
+                        },
                         onAddProvider = {
                             editingProviderIndex = -1
                             providerDraft = ProviderDraft()
@@ -199,6 +204,8 @@ class MainActivity : ComponentActivity() {
         val s = server
         mainState = mainState.copy(
             virtualModels = vmRows,
+            floatAlpha = com.aqi.ccb.gateway.FloatingBall.alphaPercent(),
+            floatLocked = com.aqi.ccb.gateway.FloatingBall.isLocked(),
             running = s?.isRunning() == true,
             requests = s?.totalRequests ?: 0,
             ok = s?.totalOk ?: 0,
@@ -291,25 +298,38 @@ class MainActivity : ComponentActivity() {
         refreshMain()
     }
 
-    /** 探测模型：GET {baseUrl}/models */
+    /**
+     * 连接测试 —— rikka 三件套：非流式 / 流式 / 工具调用。
+     * 未填模型 ID 时先拉 /models 自动选第一个。
+     */
     private fun testProvider() {
         val d = providerDraft
         if (!d.baseUrl.startsWith("http")) {
             providerTest = "Base URL 需以 http(s):// 开头"
             return
         }
-        providerTest = "探测中…"
+        providerTest = "测试中…（非流式/流式/工具）"
         Thread {
-            val result = runCatching { fetchModelIds(d.baseUrl.trimEnd('/'), d.apiKey) }
-                .getOrElse { "ERR:${it.message}" }
-            ui.post {
-                if (result.startsWith("ERR:")) {
-                    providerTest = "失败 ${result.take(70)}"
-                } else {
-                    val ids = result.split("\n").filter { it.isNotBlank() }
-                    providerDraft = providerDraft.copy(modelId = ids.joinToString(","))
-                    providerTest = "发现 ${ids.size} 个模型"
+            // 没填模型就先去拉列表
+            var modelId = d.modelId.split(',', ' ').firstOrNull { it.isNotBlank() } ?: ""
+            if (modelId.isEmpty()) {
+                val ids = runCatching { fetchModelIds(d.baseUrl.trimEnd('/'), d.apiKey) }.getOrNull()
+                if (ids != null && !ids.startsWith("ERR:") && ids.isNotBlank()) {
+                    val list = ids.split("\n").filter { it.isNotBlank() }
+                    modelId = list.firstOrNull() ?: ""
+                    ui.post {
+                        providerDraft = providerDraft.copy(modelId = list.joinToString(","))
+                    }
                 }
+            }
+            if (modelId.isEmpty()) {
+                ui.post { providerTest = "无法确定模型 ID" }
+                return@Thread
+            }
+            val res = ModelProbe.probe(d.baseUrl.trimEnd('/'), d.apiKey, modelId)
+            ui.post {
+                providerTest = res.summary()
+                providerDraft = providerDraft.copy(probeResult = res.summary())
             }
         }.start()
     }
