@@ -51,6 +51,7 @@ import java.io.File
 class MainActivity : ComponentActivity() {
 
     private var server: GatewayServer? = null
+    private var appLogDir: File = File("/dev/null")
     private var mcpServer: McpServer? = null
     private val ui = Handler(Looper.getMainLooper())
 
@@ -90,7 +91,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        GateLog.init(File(filesDir, "logs"))
+        // 日志写到外部私有目录（/sdcard/Android/data/<pkg>/files/logs）：
+        // 应用无需额外权限即可写，adb/shell 也能直接读，便于自助排查。
+        // 取不到外部目录时回退到内部 filesDir。
+        val extDir = try {
+            getExternalFilesDir(null) ?: filesDir
+        } catch (e: Exception) {
+            filesDir
+        }
+        appLogDir = File(extDir, "logs")
+        GateLog.init(appLogDir)
         ProviderRepo.warmUpSecrets(this)
 
         setContent {
@@ -317,6 +327,9 @@ class MainActivity : ComponentActivity() {
 
         val vmodels = VirtualModelStore.load(this)
         val srv = GatewayServer(port, providers, rules, limiter, "", vmodels)
+        // 注入路径供 /v1/_gw/diag 暴露，便于外部自助排查
+        srv.logDirPath = appLogDir.absolutePath
+        srv.configDirPath = filesDir.absolutePath
         if (srv.start()) {
             server = srv
             mainState = mainState.copy(statusNote = null)
