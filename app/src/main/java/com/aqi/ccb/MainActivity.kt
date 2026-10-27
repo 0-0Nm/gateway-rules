@@ -60,6 +60,19 @@ class MainActivity : ComponentActivity() {
     // ---- 主界面 tab（聚合/提供商/规则/虚拟模型）----
     private var mainTab by mutableStateOf("agg")
 
+    // ---- 设置页可观察状态（关键：不能用 AppSettings 每次重组新建快照，
+    //      否则受控输入框 value 会回滚导致打不进字，开关也不生效）----
+    private var settingsState by mutableStateOf(
+        com.aqi.ccb.ui.SettingsState(
+            gatewayPort = "38080",
+            floatEnabled = true,
+            mcpEnabled = false,
+            mcpPort = "38081",
+            toastEnabled = true,
+            mcpRunning = false,
+        )
+    )
+
     // ---- 聚合页状态 ----
     private var mainState by mutableStateOf(MainUiState())
 
@@ -107,33 +120,40 @@ class MainActivity : ComponentActivity() {
                         testResult = providerTest,
                     )
                     "settings" -> SettingsScreen(
-                        state = SettingsState(
-                            gatewayPort = mainState.port,
-                            floatEnabled = AppSettings.floatEnabled(this),
-                            mcpEnabled = AppSettings.mcpEnabled(this),
-                            mcpPort = AppSettings.mcpPort(this).toString(),
-                            toastEnabled = AppSettings.toastEnabled(this),
-                            mcpRunning = mcpServer?.isRunning() == true,
+                        state = settingsState.copy(
+                            mcpRunning = mcpServer?.isRunning() == true
                         ),
                         onGatewayPort = { p ->
+                            // 先更新 UI 状态（否则受控输入会回滚，表现为打不进字）
+                            settingsState = settingsState.copy(gatewayPort = p)
                             mainState = mainState.copy(port = p)
                             AppSettings.setGatewayPort(this, p.toIntOrNull() ?: 38080)
                         },
                         onFloatToggle = { v ->
+                            settingsState = settingsState.copy(floatEnabled = v)
                             AppSettings.setFloatEnabled(this, v)
                             if (v && server?.isRunning() == true) {
                                 FloatingBall.attach(this)
                             } else if (!v) {
                                 FloatingBall.detach()
                             }
-                            route = route  // 触发重组
                         },
-                        onMcpToggle = { v -> toggleMcp(v) },
+                        onMcpToggle = { v ->
+                            settingsState = settingsState.copy(mcpEnabled = v)
+                            toggleMcp(v)
+                            settingsState = settingsState.copy(
+                                mcpRunning = mcpServer?.isRunning() == true
+                            )
+                        },
                         onMcpPort = { p ->
-                            val port = p.toIntOrNull() ?: 38081
-                            setMcpPort(port)
+                            settingsState = settingsState.copy(mcpPort = p)
+                            setMcpPort(p.toIntOrNull() ?: 38081)
                         },
-                        onToastToggle = { v -> AppSettings.setToastEnabled(this, v) },
+                        onToastToggle = { v ->
+                            settingsState = settingsState.copy(toastEnabled = v)
+                            AppSettings.setToastEnabled(this, v)
+                        },
+                        onBack = { route = "main"; refreshMain() },
                     )
                     "vmodel" -> VirtualModelEditScreen(
                         draft = vmDraft,
