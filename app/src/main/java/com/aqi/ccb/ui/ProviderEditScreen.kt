@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -192,10 +193,10 @@ fun ProviderEditScreen(
                             enabled = draft.baseUrl.isValidHttpUrl(),
                             modifier = Modifier.fillMaxWidth(),
                         ) { Text("探测模型") }
-                        if (draft.probedModels.isNotBlank()) {
+                        if (draft.models.isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                text = "已发现 " + draft.probedModels.split(',').count { it.isNotBlank() } + " 个模型",
+                                text = "已发现 " + draft.models.size + " 个模型",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.primary,
                             )
