@@ -61,6 +61,8 @@ fun ProviderEditScreen(
     onSave: () -> Unit,
     onDelete: (() -> Unit)?,
     onTest: (() -> Unit)?,
+    onProbeModels: (() -> Unit)? = null,
+    onSuffixChange: ((String) -> Unit)? = null,
     testResult: String?,
 ) {
     Scaffold(
@@ -118,19 +120,78 @@ fun ProviderEditScreen(
                 )
             }
 
+            // ---------- 端点类型（后缀自动探测）----------
+            Spacer(Modifier.height(16.dp))
+            CardGroup(title = { Text("端点类型") }) {
+                formItem(
+                    headlineContent = { Text("当前：${draft.suffixStyle}") },
+                    supportingContent = {
+                        Text(
+                            if (draft.suffixStyle == "AUTO")
+                                "自动：依次尝试 /v1 · /v1beta · /openai · /compatible-mode/v1"
+                            else "手动指定，不做自动探测"
+                        )
+                    },
+                ) {
+                    var expanded by remember { mutableStateOf(false) }
+                    Column {
+                        OutlinedButton(onClick = { expanded = true }) {
+                            Text("选择类型")
+                        }
+                        DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false },
+                        ) {
+                            listOf(
+                                "AUTO" to "自动探测（推荐）",
+                                "OPENAI" to "OpenAI 兼容 /v1",
+                                "GOOGLE" to "Google /v1beta",
+                                "OPENAI_COMPAT" to "中转 /openai",
+                                "ALIYUN" to "阿里云 /compatible-mode/v1",
+                                "INPUT" to "原样（不追加后缀）",
+                            ).forEach { (key, label) ->
+                                DropdownMenuItem(
+                                    text = { Text("$label  ·  $key") },
+                                    onClick = {
+                                        onSuffixChange?.invoke(key)
+                                        expanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // ---------- 探测 ----------
             Spacer(Modifier.height(16.dp))
-            CardGroup(title = { Text("模型探测") }) {
-                formItem(headlineContent = { Text("从上游 /v1/models 拉取") }) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
+            CardGroup(title = { Text("探测与测试") }) {
+                formItem(headlineContent = { Text("① 探测模型（拉 /models 列表）") }) {
+                    Column {
+                        OutlinedButton(
+                            onClick = { onProbeModels?.invoke() },
+                            enabled = draft.baseUrl.isValidHttpUrl(),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("探测模型") }
+                        if (draft.probedModels.isNotBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "已发现 " + draft.probedModels.split(',').count { it.isNotBlank() } + " 个模型",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+
+                formItem(headlineContent = { Text("② 连接测试（非流式/流式/工具）") }) {
+                    Column {
                         OutlinedButton(
                             onClick = { onTest?.invoke() },
                             enabled = draft.baseUrl.isValidHttpUrl() && draft.modelId.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth(),
                         ) { Text("连接测试") }
+                        Spacer(Modifier.height(6.dp))
                         Text(
                             text = testResult ?: "未测试",
                             style = MaterialTheme.typography.bodySmall,
