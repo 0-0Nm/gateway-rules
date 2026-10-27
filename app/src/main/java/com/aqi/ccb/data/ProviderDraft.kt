@@ -22,7 +22,11 @@ data class ProviderDraft(
     val enabled: Boolean = true,
     val tier: String = "free",
     /** 三件套探测结果摘要（UI 展示用，不落盘） */
-    val probeResult: String = ""
+    val probeResult: String = "",
+    /** baseUrl 后缀类型：AUTO / OPENAI / GOOGLE / OPENAI_COMPAT / ALIYUN / INPUT */
+    val suffixStyle: String = "AUTO",
+    /** 探测到的模型列表（逗号分隔，仅 UI 展示） */
+    val probedModels: String = ""
 ) {
     fun idOr(nameFallback: String = "provider"): String =
         (name.ifBlank { nameFallback })
