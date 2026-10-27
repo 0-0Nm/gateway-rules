@@ -40,7 +40,12 @@ class McpServer(
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
-    private val pool = Executors.newFixedThreadPool(4)
+    // 同 GatewayServer：固定池 + 长任务（gw_test_models 可跑 30s+）会堵死 MCP
+    private val pool = java.util.concurrent.ThreadPoolExecutor(
+        2, 16, 60L, java.util.concurrent.TimeUnit.SECONDS,
+        java.util.concurrent.SynchronousQueue(),
+        java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy()
+    )
 
     @Volatile var lastError: String? = null
     @Volatile var totalCalls: Long = 0
