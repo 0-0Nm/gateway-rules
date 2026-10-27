@@ -15,8 +15,20 @@ import org.json.JSONObject
  */
 object ProviderRepo {
 
-    fun list(context: Context): List<ProviderDraft> =
-        ConfigStore.loadProviders(context).map { ProviderDraft.fromJson(it) }
+    fun list(context: Context): List<ProviderDraft> {
+        // 关键：ProviderDraft.fromJson 不回填 apiKey（避免明文进 UI）。
+        // 但 MCP / 批量测试需要真实密钥，所以这里从 keys.json 回填。
+        val keys = ConfigStore.loadKeys(context)
+        return ConfigStore.loadProviders(context).map { o ->
+            val d = ProviderDraft.fromJson(o)
+            val ref = o.optString("apiKeyRef", "")
+            val key = when {
+                ref.isNotEmpty() && keys.containsKey(ref) -> keys[ref] ?: ""
+                else -> ""
+            }
+            if (key.isNotEmpty()) d.copy(apiKey = key) else d
+        }
+    }
 
     fun save(context: Context, draft: ProviderDraft): Boolean {
         if (!draft.isComplete) return false
