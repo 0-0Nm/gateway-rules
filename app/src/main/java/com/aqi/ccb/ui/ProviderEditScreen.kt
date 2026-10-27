@@ -129,10 +129,10 @@ fun ProviderEditScreen(
                     ) {
                         OutlinedButton(
                             onClick = { onTest?.invoke() },
-                            enabled = draft.baseUrl.isValidHttpUrl(),
-                        ) { Text("探测模型") }
+                            enabled = draft.baseUrl.isValidHttpUrl() && draft.modelId.isNotBlank(),
+                        ) { Text("连接测试") }
                         Text(
-                            text = testResult ?: "未探测",
+                            text = testResult ?: "未测试",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
