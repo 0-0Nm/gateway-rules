@@ -101,6 +101,7 @@ class MainActivity : ComponentActivity() {
         }
         appLogDir = File(extDir, "logs")
         GateLog.init(appLogDir)
+        com.aqi.ccb.ui.UiToast.init(this)
         ProviderRepo.warmUpSecrets(this)
 
         setContent {
@@ -131,7 +132,13 @@ class MainActivity : ComponentActivity() {
                     )
                     "settings" -> SettingsScreen(
                         state = settingsState.copy(
-                            mcpRunning = mcpServer?.isRunning() == true
+                            mcpRunning = mcpServer?.isRunning() == true,
+                            mcpCalls = mcpServer?.totalCalls ?: 0,
+                            mcpErrors = mcpServer?.totalErrors ?: 0,
+                            mcpLastMethod = mcpServer?.lastMethod ?: "",
+                            mcpLastLatencyMs = mcpServer?.lastLatencyMs ?: 0,
+                            mcpLastResult = mcpServer?.lastResult ?: "",
+                            mcpLastError = mcpServer?.lastError,
                         ),
                         onGatewayPort = { p ->
                             // 先更新 UI 状态（否则受控输入会回滚，表现为打不进字）
@@ -164,6 +171,22 @@ class MainActivity : ComponentActivity() {
                             AppSettings.setToastEnabled(this, v)
                         },
                         onBack = { route = "main"; refreshMain() },
+                        onMcpCopyRaw = {
+                            val cfg = """{
+  "mcpServers": {
+    "gateway-rules": {
+      "type": "http",
+      "url": "http://127.0.0.1:${settingsState.mcpPort}/mcp"
+    }
+  }
+}"""
+                            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                            cm.setPrimaryClip(
+                                android.content.ClipData.newPlainText("mcp", cfg)
+                            )
+                            com.aqi.ccb.ui.UiToast.show("MCP 配置 JSON 已复制")
+                        },
                     )
                     "vmodel" -> VirtualModelEditScreen(
                         draft = vmDraft,
