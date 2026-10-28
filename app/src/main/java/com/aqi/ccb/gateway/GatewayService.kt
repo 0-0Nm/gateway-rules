@@ -29,6 +29,16 @@ import android.os.PowerManager
  */
 class GatewayService : Service() {
 
+    /**
+     * 网关状态回调。
+     * 注意：必须声明在类层级而非 companion 内——
+     * 放在 companion 里时外部写成 GatewayService.StateListener 会解析失败，
+     * 编译器要求 GatewayService.Companion.StateListener，调用方很别扭。
+     */
+    interface StateListener {
+        fun onGatewayState(running: Boolean, port: Int, error: String?)
+    }
+
     companion object {
         private const val CHANNEL_ID = "gateway_service"
         private const val NOTIF_ID = 1002
@@ -43,10 +53,6 @@ class GatewayService : Service() {
         @Volatile
         var running: Boolean = false
             private set
-
-        interface StateListener {
-            fun onGatewayState(running: Boolean, port: Int, error: String?)
-        }
 
         private val listeners = java.util.concurrent.CopyOnWriteArrayList<StateListener>()
         private var lastPort = 0
