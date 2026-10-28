@@ -159,9 +159,18 @@ fun CardGroupScope.switchItem(
     headlineContent = headlineContent,
 )
 
+/**
+ * 分组项形状。圆角来自 LocalUiStyle（可由 MCP 的 gw_set_ui_style 实时调整）：
+ *   baseRadius    —— 分组首尾的外圈圆角（默认 22）
+ *   innerCornerEnabled=false 时内圈退化为 2dp，整组更像一整块
+ */
+@Composable
 fun cardGroupItemShape(index: Int, count: Int): Shape {
-    val top = if (index == 0) CardGroupCorner else CardGroupInnerCorner
-    val bottom = if (index == count - 1) CardGroupCorner else CardGroupInnerCorner
+    val st = LocalUiStyle.current
+    val outer = st.baseRadius.dp
+    val inner = if (st.innerCornerEnabled) CardGroupInnerCorner else 2.dp
+    val top = if (index == 0) outer else inner
+    val bottom = if (index == count - 1) outer else inner
     return RoundedCornerShape(topStart = top, topEnd = top, bottomStart = bottom, bottomEnd = bottom)
 }
 
