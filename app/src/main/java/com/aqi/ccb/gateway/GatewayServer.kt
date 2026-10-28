@@ -47,6 +47,22 @@ class GatewayServer(
     @Volatile var totalOk: Long = 0
     @Volatile var totalFail: Long = 0
 
+    // ---- 诊断指标（照 DeepSeek 本地 API 的实时监控面板）----
+    /** 当前 TCP 连接数（accept 后 +1，关闭后 -1） */
+    private val tcpConnections = AtomicInteger(0)
+    /** 客户端主动断开次数 */
+    @Volatile var clientDisconnects: Long = 0
+    /** 最近一次成功路由：model@provider */
+    @Volatile var latestRoute: String = ""
+    /** 最近一次失败原因 */
+    @Volatile var latestFailure: String = ""
+    /** 最近一次失败的原因分类（用于面板"Failure reasons"） */
+    @Volatile var latestFailureReason: String = ""
+    /** 实际绑定地址（启动时记录，便于诊断） */
+    @Volatile var actualBind: String = ""
+    /** 启动时刻 */
+    @Volatile var startedAtMs: Long = 0L
+
     fun update(providers: List<Provider>, rules: List<RuleSpec>,
                virtualModels: List<VirtualModel>? = null) {
         this.providers = providers
@@ -73,7 +89,9 @@ class GatewayServer(
                     }
                 }
             }, "gw-accept").apply { isDaemon = true; start() }
-            GateLog.info("gw", "listening 127.0.0.1:$port providers=${providers.size} rules=${rules.size}")
+            actualBind = "0.0.0.0:$port"
+            startedAtMs = System.currentTimeMillis()
+            GateLog.info("gw", "listening $actualBind providers=${providers.size} rules=${rules.size}")
             true
         } catch (e: Exception) {
             lastError = e.toString()
@@ -92,10 +110,22 @@ class GatewayServer(
 
     fun isRunning(): Boolean = running.get()
 
+    // ---- 供 UI 读取的公开诊断访问器（内部实现保持 private）----
+    fun pathDiagnosisPublic(): String = pathDiagnosis()
+    fun lanHintPublic(): String = lanHint()
+    fun acceptAlivePublic(): Boolean = acceptThread?.isAlive == true
+    fun tcpConnectionsPublic(): Int = tcpConnections.get()
+    fun workerCountPublic(): Int = pool.activeCount
+    fun queuedCountPublic(): Int = pool.queue?.size ?: 0
+    fun uptimeSecPublic(): Long =
+        if (startedAtMs > 0) (System.currentTimeMillis() - startedAtMs) / 1000 else 0
+
     // ==================== 连接处理 ====================
     private fun handleConnection(socket: Socket) {
         val reqId = "r-" + UUID.randomUUID().toString().take(8)
         val t0 = System.currentTimeMillis()
+        val connNow = tcpConnections.incrementAndGet()
+        GateLog.info("gw", "conn open #" + connNow + " from=" + (socket.inetAddress?.hostAddress ?: "?"))
         try {
             socket.soTimeout = 30_000   // 客户端读请求头/体，30s 足够，避免长挂占线程
             val input = BufferedInputStream(socket.getInputStream())
@@ -153,7 +183,9 @@ class GatewayServer(
         } catch (e: Exception) {
             GateLog.error("gw", "connection error rid=$reqId", e)
         } finally {
+            val left = tcpConnections.decrementAndGet()
             try { socket.close() } catch (_: Exception) {}
+            if (left <= 0) clientDisconnects++
         }
     }
 
@@ -270,6 +302,7 @@ class GatewayServer(
                     c.p.errors = 0
                     c.p.lastUsedMs = System.currentTimeMillis()
                     limiter.noteSuccess(c.p.id)   // 成功即重置软限流退避
+                    latestRoute = c.m.modelId + "@" + c.p.id
                     GateLog.attempt(reqId, c.p.id, modelId, true, latency, code, null)
                     relay(output, conn, stream)
                     SwitchPolicy.onSuccess(
@@ -315,6 +348,8 @@ class GatewayServer(
         }
 
         totalFail++
+        latestFailure = lastErr ?: "unknown"
+        latestFailureReason = classifyFailure(lastErr)
         GateLog.requestEnd(reqId, false, "-", 0.0, listOf("all_failed"))
         writeJson(output, 502, """{"error":{"message":"all providers failed: ${esc(lastErr ?: "")}","type":"upstream"}}""")
     }
@@ -450,6 +485,26 @@ class GatewayServer(
         val sw = SwitchPolicy.stats()
         sb.append(",\"switch\":{\"bindings\":").append(sw["bindings"])
         sb.append(",\"sessions\":").append(sw["sessions"]).append("}")
+
+        // ---- 诊断块（对应 DeepSeek 本地 API 的实时监控面板）----
+        sb.append(",\"diag\":{")
+        sb.append("\"actualBind\":\"").append(esc(esc(actualBind))).append("\"")
+        sb.append(",\"acceptAlive\":").append(acceptThread?.isAlive == true)
+        sb.append(",\"tcpConnections\":").append(tcpConnections.get())
+        sb.append(",\"clientDisconnects\":").append(clientDisconnects)
+        sb.append(",\"httpWorkers\":").append(pool.activeCount)
+        sb.append(",\"httpQueued\":").append(pool.queue?.size ?: 0)
+        sb.append(",\"poolSize\":").append(pool.poolSize)
+        val upSec = if (startedAtMs > 0)
+            (System.currentTimeMillis() - startedAtMs) / 1000 else 0
+        sb.append(",\"uptimeSec\":").append(upSec)
+        sb.append(",\"latestRoute\":\"").append(esc(esc(latestRoute))).append("\"")
+        sb.append(",\"latestFailure\":\"").append(esc(esc(latestFailure))).append("\"")
+        sb.append(",\"latestFailureReason\":\"")
+            .append(esc(esc(latestFailureReason))).append("\"")
+        sb.append(",\"pathDiagnosis\":\"").append(esc(esc(pathDiagnosis()))).append("\"")
+        sb.append(",\"lanHint\":\"").append(esc(esc(lanHint()))).append("\"")
+        sb.append("}")
         // 限流实时
         sb.append(",\"rate\":[")
         providers.forEachIndexed { i, p ->
@@ -498,6 +553,86 @@ class GatewayServer(
     private fun peekJson(pid: String): String {
         val m = limiter.peek(pid)
         return """{"tokens":${m["tokens"]},"inflight":${m["inflight"]},"can_send":${m["can_send"]},"wait_ms":${m["wait_ms"]}}"""
+    }
+
+    /**
+     * 失败原因分类 —— 面板上直接显示人话，不用翻日志猜。
+     * 对应 DeepSeek 本地 API 的 "Failure reasons" 一栏。
+     */
+    private fun classifyFailure(err: String?): String {
+        val e = (err ?: "").lowercase()
+        return when {
+            e.isEmpty() -> "未知"
+            e.contains("rate_limited") || e.contains("soft_rest") -> "被限流，已进入休息"
+            e.contains("connection refused") -> "连接被拒（上游端口不通）"
+            e.contains("failed to connect") || e.contains("connectexception") -> "连不上上游（网络或域名）"
+            e.contains("timed out") || e.contains("timeout") -> "上游超时"
+            e.contains("unknownhost") || e.contains("no address") -> "域名解析失败"
+            e.contains("ssl") || e.contains("certificate") -> "SSL 证书错误"
+            e.contains("http_401") -> "鉴权失败（Key 无效）"
+            e.contains("http_403") -> "被拒绝（权限/风控）"
+            e.contains("http_404") -> "路径错误（baseUrl 可能不对）"
+            e.contains("http_429") -> "被限流（429）"
+            e.contains("http_5") -> "上游服务端错误"
+            e.contains("model_not_found") -> "模型不存在"
+            else -> "其他：" + (err ?: "").take(40)
+        }
+    }
+
+    /**
+     * 路径诊断 —— 直接给出"为什么连不上"的结论。
+     *
+     * 这是 DeepSeek 本地 API 面板里最值钱的一条：
+     *   "Listener is healthy but no TCP connection arrived;
+     *    use 127.0.0.1 on-device or the LAN endpoint from another device"
+     *
+     * 它把"服务在跑"和"没人连进来"区分开，省掉大量盲猜。
+     */
+    private fun pathDiagnosis(): String {
+        if (!running.get()) return "服务未启动"
+        if (acceptThread?.isAlive != true) return "accept 线程已死，需重启网关"
+
+        val conns = tcpConnections.get()
+        val reqs = totalRequests
+        return when {
+            conns == 0 && reqs == 0L ->
+                "监听正常但尚无任何 TCP 连接到达；" +
+                    "本机请用 http://127.0.0.1:$port/v1，" +
+                    "局域网设备请用本机 LAN IP:$port"
+            conns == 0 && reqs > 0 ->
+                "监听正常，已有 $reqs 次请求处理完毕，当前无活跃连接（空闲状态，正常）"
+            conns > 0 && reqs == 0L ->
+                "有 $conns 个 TCP 连接但未产生请求；可能是客户端握手失败或被中间设备干扰"
+            inflight.get() >= 32 ->
+                "并发已接近上限（${inflight.get()}），慢请求可能拖慢响应"
+            totalFail > 0 && totalFail >= totalOk ->
+                "失败数已超过成功数（失败 $totalFail / 成功 $totalOk），检查上游 key 与网络"
+            else ->
+                "运行正常：$totalOk 成功 / $totalFail 失败，当前 $conns 个连接"
+        }
+    }
+
+    /** 局域网访问提示：告诉用户别的设备该填什么地址 */
+    private fun lanHint(): String {
+        return try {
+            val ifaces = java.net.NetworkInterface.getNetworkInterfaces()
+            val ips = mutableListOf<String>()
+            while (ifaces.hasMoreElements()) {
+                val nif = ifaces.nextElement()
+                if (!nif.isUp || nif.isLoopback) continue
+                val addrs = nif.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val a = addrs.nextElement()
+                    if (a is java.net.Inet4Address && !a.isLoopbackAddress) {
+                        ips.add("http://" + a.hostAddress + ":" + port + "/v1")
+                    }
+                }
+            }
+            if (ips.isEmpty()) "未检测到局域网地址（仅本机 127.0.0.1 可用）"
+            else ips.joinToString(" | ")
+        } catch (e: Exception) {
+            "局域网地址探测失败: " + e.message
+        }
     }
 
     /** 上游即使回 200，正文仍可能写着限流——识别出来同样走软限流 */
