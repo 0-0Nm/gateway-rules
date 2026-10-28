@@ -57,6 +57,12 @@ data class SettingsState(
     val mcpLastError: String? = null,
     /** 实际监听中的端口（与 mcpPort 草稿可能不同，未点「应用」前不等） */
     val mcpPortApplied: String = "",
+    // ---- 权限状态 ----
+    val permOverlay: Boolean = false,
+    val permNotification: Boolean = false,
+    val permBattery: Boolean = false,
+    /** 悬浮球最近一次挂载失败原因 */
+    val floatError: String? = null,
 ) {
     /** 地址用实际生效端口，避免显示未应用的草稿值 */
     val mcpUrl: String
@@ -82,6 +88,8 @@ fun SettingsScreen(
     onBack: () -> Unit = {},
     onMcpCopyRaw: (() -> Unit)? = null,
     onMcpPortApply: (() -> Unit)? = null,
+    onOpenPerm: ((String) -> Unit)? = null,
+    onRequestAllPerms: (() -> Unit)? = null,
 ) {
     Scaffold(
         topBar = {
@@ -273,6 +281,98 @@ fun SettingsScreen(
                         )
                     },
                 )
+            }
+
+            // ---------- 权限 ----------
+            Spacer(Modifier.height(8.dp))
+            CardGroup(title = { Text("权限") }) {
+                val missing = listOf(
+                    Triple("overlay", "悬浮窗", state.permOverlay),
+                    Triple("notification", "通知", state.permNotification),
+                    Triple("battery", "忽略电池优化", state.permBattery),
+                ).filter { !it.third }
+
+                if (missing.isEmpty()) {
+                    item(
+                        headlineContent = { Text("全部已授予 ✓") },
+                        supportingContent = { Text("悬浮窗 / 通知 / 电池白名单均正常") },
+                    )
+                } else {
+                    item(
+                        headlineContent = { Text("有 ${missing.size} 项未授予") },
+                        supportingContent = {
+                            Text(
+                                "缺少这些权限时：悬浮球不显示、后台容易被回收",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        },
+                        trailingContent = {
+                            Button(onClick = { onRequestAllPerms?.invoke() }) {
+                                Text("全部申请")
+                            }
+                        },
+                    )
+                }
+
+                item(
+                    onClick = { onOpenPerm?.invoke("overlay") },
+                    headlineContent = { Text("悬浮窗") },
+                    supportingContent = {
+                        Text(
+                            if (state.permOverlay) "已授予"
+                            else "未授予 · 点击去开启（悬浮球必需）",
+                            color = if (state.permOverlay)
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.error
+                        )
+                    },
+                    trailingContent = {
+                        Text(if (state.permOverlay) "✓" else "去开启")
+                    },
+                )
+
+                item(
+                    onClick = { onOpenPerm?.invoke("notification") },
+                    headlineContent = { Text("通知") },
+                    supportingContent = {
+                        Text(
+                            if (state.permNotification) "已授予"
+                            else "未授予 · 前台服务通知不可见",
+                            color = if (state.permNotification)
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.error
+                        )
+                    },
+                    trailingContent = {
+                        Text(if (state.permNotification) "✓" else "去开启")
+                    },
+                )
+
+                item(
+                    onClick = { onOpenPerm?.invoke("battery") },
+                    headlineContent = { Text("忽略电池优化") },
+                    supportingContent = {
+                        Text(
+                            if (state.permBattery) "已加入白名单"
+                            else "未加入 · 息屏后网关可能被回收",
+                            color = if (state.permBattery)
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.error
+                        )
+                    },
+                    trailingContent = {
+                        Text(if (state.permBattery) "✓" else "去设置")
+                    },
+                )
+
+                state.floatError?.let { err ->
+                    item(
+                        headlineContent = { Text("悬浮球挂载失败") },
+                        supportingContent = {
+                            Text(err, color = MaterialTheme.colorScheme.error)
+                        },
+                    )
+                }
             }
 
             // ---------- 界面 ----------
