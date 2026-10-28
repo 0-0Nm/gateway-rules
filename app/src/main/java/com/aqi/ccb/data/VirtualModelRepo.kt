@@ -18,6 +18,7 @@ object VirtualModelRepo {
                 ruleId = vm.ruleId,
                 enabled = vm.enabled,
                 members = vm.members.map { "${it.providerId}|${it.modelId}" },
+                transforms = vm.transforms,
             )
         }
 
