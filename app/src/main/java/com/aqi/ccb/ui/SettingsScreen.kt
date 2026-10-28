@@ -61,6 +61,10 @@ data class SettingsState(
     val permOverlay: Boolean = false,
     val permNotification: Boolean = false,
     val permBattery: Boolean = false,
+    /** 电池项精确状态：GRANTED / DENIED / UNKNOWN（vivo 等 ROM 判定不可靠时为 UNKNOWN） */
+    val permBatteryStatus: String = "DENIED",
+    /** 电池项判定依据，便于用户/开发者排查 */
+    val permBatteryEvidence: String = "",
     /** 悬浮球最近一次挂载失败原因 */
     val floatError: String? = null,
 ) {
@@ -354,16 +358,31 @@ fun SettingsScreen(
                     onClick = { onOpenPerm?.invoke("battery") },
                     headlineContent = { Text("忽略电池优化") },
                     supportingContent = {
+                        val isUnknown = state.permBatteryStatus == "UNKNOWN"
                         Text(
-                            if (state.permBattery) "已加入白名单"
-                            else "未加入 · 息屏后网关可能被回收",
-                            color = if (state.permBattery)
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            else MaterialTheme.colorScheme.error
+                            when {
+                                state.permBattery -> "已加入白名单"
+                                isUnknown ->
+                                    "已去过设置页；本机系统对该项判定不可靠，请自行确认" +
+                                        (if (state.permBatteryEvidence.isNotBlank())
+                                            "（" + state.permBatteryEvidence + "）" else "")
+                                else -> "未加入 · 息屏后网关可能被回收"
+                            },
+                            color = when {
+                                state.permBattery -> MaterialTheme.colorScheme.onSurfaceVariant
+                                isUnknown -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.error
+                            }
                         )
                     },
                     trailingContent = {
-                        Text(if (state.permBattery) "✓" else "去设置")
+                        Text(
+                            when {
+                                state.permBattery -> "✓"
+                                state.permBatteryStatus == "UNKNOWN" -> "待确认"
+                                else -> "去设置"
+                            }
+                        )
                     },
                 )
 
