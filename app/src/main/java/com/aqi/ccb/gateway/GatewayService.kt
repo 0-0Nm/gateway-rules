@@ -139,7 +139,11 @@ class GatewayService : Service() {
             return START_NOT_STICKY
         }
 
-        val port = intent?.getIntExtra("port", 38080) ?: 38080
+        // 注意：系统因 START_STICKY 重启服务时 intent 可能是 null，
+        // 原来 fallback 写死 38080，用户改过端口就会用错值启动。
+        // 现在 fallback 读持久化配置。
+        val configPort = com.aqi.ccb.data.AppSettings.gatewayPort(this)
+        val port = intent?.getIntExtra("port", configPort) ?: configPort
 
         createChannel()
         startForeground(NOTIF_ID, buildNotif("网关 @ 127.0.0.1:$port"))
