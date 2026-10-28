@@ -654,6 +654,9 @@ class GatewayServer(
         // 失败窗口：悬浮球「中断」状态的判据来源，便于排查
         sb.append(",\"failWin60s\":").append(recentFailureCountPublic(60_000L))
         sb.append(",\"lastFailAgoMs\":").append(lastFailureAgoMsPublic())
+        // 共享 WakeLock 状态：两个服务共用一把物理锁，ref 应为 2 而非各自一把
+        sb.append(",\"wakeRef\":").append(WakeLockHolder.refCountPublic())
+        sb.append(",\"wakeHeld\":").append(WakeLockHolder.isHeldPublic())
         sb.append("}")
         // 限流实时
         sb.append(",\"rate\":[")
