@@ -7,6 +7,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 跳转「忽略电池优化」必须有这个权限，否则 ACTION_REQUEST_IGNORE_
+         BATTERY_OPTIMIZATIONS 会抛 SecurityException，降级到应用详情页，
+         而那里没有电池开关 —— 表现就是「点去开启没反应」。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
