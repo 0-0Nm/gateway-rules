@@ -179,8 +179,14 @@ class MainActivity : ComponentActivity() {
                             settingsState = settingsState.copy(floatEnabled = v)
                             AppSettings.setFloatEnabled(this, v)
                             if (v && server?.isRunning() == true) {
-                                FloatingBall.attach(this)
-                                FloatingBall.setMcpAlive(McpService.running)
+                                if (!FloatingBall.attach(this)) {
+                                    com.aqi.ccb.ui.UiToast.error(
+                                        "悬浮球未显示：" +
+                                            (FloatingBall.lastAttachError ?: "缺少悬浮窗权限")
+                                    )
+                                } else {
+                                    FloatingBall.setMcpAlive(McpService.running)
+                                }
                             } else if (!v) {
                                 FloatingBall.detach()
                             }
@@ -197,6 +203,30 @@ class MainActivity : ComponentActivity() {
                             // 原实现每次击键都 setMcpPort，"3"/"38"/"380" 逐个 BindException，
                             // 最后 MCP 停在半截端口，UI 却显示完整值 -> "连不上"
                             settingsState = settingsState.copy(mcpPort = p)
+                        },
+                        permOverlay = com.aqi.ccb.gateway.PermissionHelper.canDrawOverlays(this),
+                        permNotification = com.aqi.ccb.gateway.PermissionHelper.canPostNotification(this),
+                        permBattery = com.aqi.ccb.gateway.PermissionHelper
+                            .isIgnoringBatteryOptimizations(this),
+                        floatError = com.aqi.ccb.gateway.FloatingBall.lastAttachError,
+                        onOpenPerm = { key ->
+                            val ok = com.aqi.ccb.gateway.PermissionHelper.openSettings(this, key)
+                            if (!ok) {
+                                com.aqi.ccb.ui.UiToast.error("无法打开设置页，请手动到应用详情里授权")
+                            }
+                        },
+                        onRequestAllPerms = {
+                            val missing = com.aqi.ccb.gateway.PermissionHelper.missingKeys(this)
+                            if (missing.isEmpty()) {
+                                com.aqi.ccb.ui.UiToast.show("所有权限已授予")
+                            } else {
+                                // 逐个引导：先开第一个，用户返回后可再来一次
+                                com.aqi.ccb.gateway.PermissionHelper
+                                    .openSettings(this, missing.first())
+                                com.aqi.ccb.ui.UiToast.show(
+                                    "还有 ${missing.size} 项待授权，请逐个开启"
+                                )
+                            }
                         },
                         onMcpPortApply = {
                             val target = settingsState.mcpPort.toIntOrNull() ?: 38081
@@ -452,10 +482,16 @@ class MainActivity : ComponentActivity() {
             server = srv
             mainState = mainState.copy(statusNote = null)
             if (AppSettings.floatEnabled(this)) {
-                FloatingBall.attach(this)
-                FloatingBall.setState(FloatingBall.STATE_IDLE)
-                // 卫星球初值：反映 MCP 是否已活
-                FloatingBall.setMcpAlive(McpService.running)
+                val ok = FloatingBall.attach(this)
+                if (!ok) {
+                    // 不再静默失败：明确告诉用户缺什么
+                    val err = FloatingBall.lastAttachError ?: "未知原因"
+                    GateLog.warn("float", "attach failed -> " + err)
+                    com.aqi.ccb.ui.UiToast.error("悬浮球未显示：" + err + "（设置→权限里开启悬浮窗）")
+                } else {
+                    FloatingBall.setState(FloatingBall.STATE_IDLE)
+                    FloatingBall.setMcpAlive(McpService.running)
+                }
             }
             startMcpIfEnabled()
         } else {
