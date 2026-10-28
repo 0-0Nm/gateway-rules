@@ -77,15 +77,18 @@ data class RuleDraft(
             Triple("take", "截断", "只留前 N 个"),
         )
 
+        /**
+         * 执行算子清单。
+         *
+         * 诚实原则：只列服务端真正实现了的。
+         * 之前列了 8 个但服务端只跑 first，用户选 race 也无效——
+         * 这是静默忽略配置，比缺少功能更糟。
+         *
+         * 待实现（服务端会记 WARN 并降级）：race / hedge / shadow /
+         * retry_backoff / circuit_breaker / quorum / escalate
+         */
         val EXEC_OPS = listOf(
-            "first" to "顺序降级（最稳）",
-            "race" to "并发竞速（最快者胜）",
-            "hedge" to "对冲（超时追加）",
-            "shadow" to "影子流量（旁路验证）",
-            "retry_backoff" to "指数退避重试",
-            "circuit_breaker" to "熔断执行",
-            "quorum" to "多数一致",
-            "escalate" to "小模型升级",
+            "first" to "顺序降级（当前唯一已实现）",
         )
     }
 }
@@ -206,7 +209,7 @@ fun RuleEditScreen(
 
             // ---------- 限流 ----------
             Spacer(Modifier.height(16.dp))
-            CardGroup(title = { Text("④ 限流（写入全部提供商）") }) {
+            CardGroup(title = { Text("④ 限流（只填充未配置的提供商）") }) {
                 textFieldItem(
                     label = "每分钟请求数 ratePerMin",
                     value = draft.ratePerMin,
