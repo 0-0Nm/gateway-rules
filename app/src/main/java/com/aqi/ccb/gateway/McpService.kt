@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import com.aqi.ccb.data.McpBridge
 
 /**
  * MCP 前台服务 —— 移植 STRX 的 McpService 范式。
@@ -27,6 +28,14 @@ import android.os.PowerManager
  */
 class McpService : Service() {
 
+    /**
+     * 状态监听（照 STRX 的 StateListener）。
+     * 放在类体而非 companion：外部写作 McpService.StateListener 才能正确解析。
+     */
+    interface StateListener {
+        fun onStateChanged(running: Boolean, host: String, port: Int)
+    }
+
     companion object {
         private const val CHANNEL_ID = "mcp_service"
         private const val NOTIF_ID = 1001
@@ -41,11 +50,6 @@ class McpService : Service() {
         @Volatile
         var running: Boolean = false
             private set
-
-        /** 状态监听（照 STRX 的 StateListener） */
-        interface StateListener {
-            fun onStateChanged(running: Boolean, host: String, port: Int)
-        }
 
         private val listeners = java.util.concurrent.CopyOnWriteArrayList<StateListener>()
 
