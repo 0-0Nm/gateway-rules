@@ -93,13 +93,34 @@ object ProviderRepo {
         ConfigStore.saveRules(context, all)
     }
 
-    /** 把限流参数同步写入全部 provider（规则页调整限流时用） */
-    fun syncRateLimit(context: Context, rate: JSONObject) {
+    /**
+     * 同步限流参数到 provider。
+     *
+     * 修复：原来无条件覆盖全部 provider —— 你给免费号配 30/min、
+     * 付费号配 120/min，改一次规则全被冲成一个值。
+     * 现在只填充「尚未配置限流」的 provider，已有配置一律保留。
+     *
+     * @return (填充数, 跳过数)
+     */
+    fun syncRateLimit(context: Context, rate: JSONObject): Pair<Int, Int> {
         val all = ConfigStore.loadProviders(context)
-        if (all.isEmpty()) return
-        all.forEach { it.put("rateLimit", rate) }
+        if (all.isEmpty()) return 0 to 0
+        var filled = 0
+        var skipped = 0
+        all.forEach { o ->
+            if (o.has("rateLimit") && o.optJSONObject("rateLimit") != null) {
+                skipped++
+            } else {
+                o.put("rateLimit", rate)
+                filled++
+            }
+        }
         ConfigStore.saveProviders(context, all)
-        GateLog.info("config", "rateLimit synced to ${all.size} providers")
+        GateLog.info(
+            "config",
+            "rateLimit fill=$filled skip=$skipped (已有配置不被覆盖)"
+        )
+        return filled to skipped
     }
 }
 
