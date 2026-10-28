@@ -35,6 +35,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.aqi.ccb.gateway.TransformSpec
+import com.aqi.ccb.gateway.TransformType
 import com.aqi.ccb.data.VirtualModelDraft
 
 /** providerId -> (providerName, modelIds) */
@@ -208,6 +210,118 @@ fun VirtualModelEditScreen(
                 }
             }
 
+            // ---------- ④ 请求变换 ----------
+            Spacer(Modifier.height(16.dp))
+            CardGroup(title = { Text("④ 请求变换（只影响发往上游的内容）") }) {
+                item(
+                    headlineContent = { Text("说明") },
+                    supportingContent = {
+                        Text(
+                            "同一个上游可配两个虚拟模型：一个透传，一个伪装。" +
+                                "客户端选哪个名字就走哪套变换。"
+                        )
+                    },
+                )
+
+                // 指纹清洗
+                switchItem(
+                    checked = draft.transforms.any {
+                        it.type == TransformType.SANITIZE_FINGERPRINT && it.enabled
+                    },
+                    onCheckedChange = { on ->
+                        onDraftChange(draft.copy(
+                            transforms = toggleTransform(
+                                draft.transforms, TransformType.SANITIZE_FINGERPRINT, on
+                            )
+                        ))
+                    },
+                    headlineContent = { Text("清洗 SDK 指纹") },
+                    supportingContent = {
+                        Text("移除 x-stainless-* / x-client-* / anthropic-* 等识别头")
+                    },
+                )
+
+                // UA 伪装
+                textFieldItem(
+                    label = "伪装客户端名（留空不改）",
+                    value = draft.transforms.firstOrNull {
+                        it.type == TransformType.FAKE_CLIENT_NAME
+                    }?.value ?: "",
+                    onValueChange = { v ->
+                        onDraftChange(draft.copy(
+                            transforms = setTransform(
+                                draft.transforms,
+                                TransformType.FAKE_CLIENT_NAME,
+                                key = "User-Agent",
+                                value = v,
+                            )
+                        ))
+                    },
+                    supportingText = { Text("覆盖 User-Agent，例如 WorkBuddy") },
+                )
+
+                // 提示词注入
+                textFieldItem(
+                    label = "注入 system 提示词（留空不注入）",
+                    value = draft.transforms.firstOrNull {
+                        it.type == TransformType.INJECT_SYSTEM_PROMPT
+                    }?.value ?: "",
+                    onValueChange = { v ->
+                        onDraftChange(draft.copy(
+                            transforms = setTransform(
+                                draft.transforms,
+                                TransformType.INJECT_SYSTEM_PROMPT,
+                                value = v,
+                            )
+                        ))
+                    },
+                    supportingText = { Text("插到 messages 最前；已有 system 则合并") },
+                    maxLines = 4,
+                )
+
+                // 参数自动改写
+                switchItem(
+                    checked = draft.transforms.any {
+                        it.type == TransformType.REWRITE_PARAM &&
+                            it.key == "max_tokens" && it.enabled
+                    },
+                    onCheckedChange = { on ->
+                        onDraftChange(draft.copy(
+                            transforms = if (on) setTransform(
+                                draft.transforms,
+                                TransformType.REWRITE_PARAM,
+                                key = "max_tokens",
+                                value = "max_completion_tokens",
+                            ) else removeTransform(
+                                draft.transforms, TransformType.REWRITE_PARAM
+                            )
+                        ))
+                    },
+                    headlineContent = { Text("max_tokens 自动改写") },
+                    supportingContent = {
+                        Text("部分上游只认 max_completion_tokens，自动改名避免 400")
+                    },
+                )
+
+                // 已启用的变换预览
+                if (draft.transforms.isNotEmpty()) {
+                    formItem(headlineContent = { Text("已启用 ${draft.transforms.size} 项") }) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            draft.transforms.forEach { tr ->
+                                Text(
+                                    "· ${tr.type.name}" +
+                                        (if (tr.value.isNotEmpty()) " = ${tr.value.take(24)}" else ""),
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontFamily = MonoFont
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // ---------- 操作 ----------
             Spacer(Modifier.height(24.dp))
             Button(
@@ -228,3 +342,34 @@ fun VirtualModelEditScreen(
         }
     }
 }
+
+// ==================== 变换列表操作 ====================
+
+/** 开关某类变换；开启时若不存在则补一个默认项 */
+private fun toggleTransform(
+    list: List<TransformSpec>,
+    type: TransformType,
+    on: Boolean,
+): List<TransformSpec> {
+    val without = list.filter { it.type != type }
+    return if (on) without + TransformSpec(type) else without
+}
+
+/** 设置/更新某类变换（值变化时替换） */
+private fun setTransform(
+    list: List<TransformSpec>,
+    type: TransformType,
+    key: String = "",
+    value: String = "",
+): List<TransformSpec> {
+    val without = list.filter { it.type != type }
+    // 空值视为关闭
+    if (value.isBlank()) return without
+    return without + TransformSpec(type, key = key, value = value)
+}
+
+/** 移除某类变换 */
+private fun removeTransform(
+    list: List<TransformSpec>,
+    type: TransformType,
+): List<TransformSpec> = list.filter { it.type != type }
