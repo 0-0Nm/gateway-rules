@@ -143,6 +143,9 @@ class MainActivity : ComponentActivity() {
         // 订阅前台服务的真实状态：UI 端口显示以实际监听为准
         McpService.addListener(mcpStateListener)
         GatewayService.addListener(gwStateListener)
+        // 注入日志目录：GatewayService 每次 onStartCommand 都会用它填 diag.logDir，
+        // 之前从未调用导致 diag 里 logDir 恒为空串（这是上一轮的回归）。
+        GatewayService.setPendingLogDir(appLogDir.absolutePath)
 
         setContent {
             AppTheme {
@@ -369,6 +372,16 @@ class MainActivity : ComponentActivity() {
         }
 
         refreshMain()
+        // Activity 重建（如旋屏/系统回收后恢复）时，若球应显示但已丢失，补挂一次。
+        // attach 内部有 `if (mainView != null) return true` 幂等保护，重复调用安全。
+        if (AppSettings.floatEnabled(this)) {
+            runCatching {
+                if (FloatingBall.attach(this)) {
+                    FloatingBall.setState(FloatingBall.STATE_IDLE)
+                    FloatingBall.setMcpAlive(McpService.running)
+                }
+            }
+        }
         ui.postDelayed({ runCatching { startGateway() } }, 600)
         startTicker()
     }
@@ -382,10 +395,16 @@ class MainActivity : ComponentActivity() {
         ui.removeCallbacksAndMessages(null)
         McpService.removeListener(mcpStateListener)
         GatewayService.removeListener(gwStateListener)
-        // 网关由前台服务托管，Activity 销毁时不停止它（这是前台服务的目的）
-        // MCP 由前台服务托管，Activity 销毁时**不能**停止它——
-        // 否则退后台就断连，这正是改用 Service 的目的（照 STRX）。
-        FloatingBall.detach()
+
+        // 网关 / MCP 由前台服务托管，Activity 销毁时都不停止。
+        //
+        // 悬浮球同样**不能**在这里 detach —— 这是之前退后台球消失的根因：
+        //   TYPE_APPLICATION_OVERLAY 的 View 归 WindowManager 服务所有，
+        //   生命周期跟进程走，不跟 Activity 走；
+        //   attach 时用的是 applicationContext，不持有 Activity 引用，无泄漏。
+        // 所以只要进程活着，球就该一直在。真正的 detach 时机只有两个：
+        //   1) 用户在设置里关掉悬浮窗开关
+        //   2) 进程真正退出（WindowManager 自动回收，无需手动）
         super.onDestroy()
     }
 
@@ -530,7 +549,9 @@ class MainActivity : ComponentActivity() {
 
     private fun stopGateway() {
         GatewayService.stop(this)
-        FloatingBall.detach()
+        // 停网关不等于要隐藏悬浮球：球显示「待命」即可，
+        // 重新启动时无需重建视图（避免反复 add/remove 造成闪烁）。
+        FloatingBall.setState(FloatingBall.STATE_IDLE)
         refreshMain()
     }
 
