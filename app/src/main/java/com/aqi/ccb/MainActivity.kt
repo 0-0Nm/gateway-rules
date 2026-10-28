@@ -159,6 +159,14 @@ class MainActivity : ComponentActivity() {
                     )
                     "settings" -> SettingsScreen(
                         state = settingsState.copy(
+                            // ---- 权限状态（每次渲染重新读取，用户改完设置回来即刷新）----
+                            permOverlay = com.aqi.ccb.gateway.PermissionHelper
+                                .canDrawOverlays(this),
+                            permNotification = com.aqi.ccb.gateway.PermissionHelper
+                                .canPostNotification(this),
+                            permBattery = com.aqi.ccb.gateway.PermissionHelper
+                                .isIgnoringBatteryOptimizations(this),
+                            floatError = com.aqi.ccb.gateway.FloatingBall.lastAttachError,
                             mcpRunning = mcpServer?.isRunning() == true,
                             // 实际监听端口（来自 McpServer），与草稿分开，避免显示未生效值
                             mcpPortApplied = mcpServer?.port?.toString() ?: "",
@@ -204,11 +212,6 @@ class MainActivity : ComponentActivity() {
                             // 最后 MCP 停在半截端口，UI 却显示完整值 -> "连不上"
                             settingsState = settingsState.copy(mcpPort = p)
                         },
-                        permOverlay = com.aqi.ccb.gateway.PermissionHelper.canDrawOverlays(this),
-                        permNotification = com.aqi.ccb.gateway.PermissionHelper.canPostNotification(this),
-                        permBattery = com.aqi.ccb.gateway.PermissionHelper
-                            .isIgnoringBatteryOptimizations(this),
-                        floatError = com.aqi.ccb.gateway.FloatingBall.lastAttachError,
                         onOpenPerm = { key ->
                             val ok = com.aqi.ccb.gateway.PermissionHelper.openSettings(this, key)
                             if (!ok) {
