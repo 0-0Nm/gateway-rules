@@ -414,17 +414,34 @@ fun SettingsScreen(
                     onClick = { onOpenAutoStart?.invoke() },
                     headlineContent = { Text("自启动 / 后台运行管理") },
                     supportingContent = {
+                        // Android 无标准 API 查自启动白名单真实状态，
+                        // 因此不谎报"已开启"，按"是否前往过"分级提示。
+                        val visited = state.permAutostartVisited
                         Text(
-                            if (freezeProneRom)
-                                "本机为 ${android.os.Build.BRAND}：息屏后系统会冻结进程" +
-                                    "（服务还在但不响应），必须在此加入允许列表"
-                            else "点击前往系统设置，允许后台运行",
-                            color = if (freezeProneRom)
-                                MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurfaceVariant
+                            when {
+                                visited ->
+                                    "已前往设置页。本机系统不提供自启动状态查询，请自行确认" +
+                                        "本应用已在允许列表中；若仍被冻结，请再进去检查一次"
+                                freezeProneRom ->
+                                    "本机为 ${android.os.Build.BRAND}：息屏后系统会冻结进程" +
+                                        "（服务还在但不响应），必须在此加入允许列表"
+                                else -> "点击前往系统设置，允许后台运行"
+                            },
+                            color = when {
+                                visited -> MaterialTheme.colorScheme.onSurfaceVariant
+                                freezeProneRom -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
                         )
                     },
-                    trailingContent = { Text("去设置") },
+                    trailingContent = {
+                        Text(
+                            if (state.permAutostartVisited) "已前往" else "去设置",
+                            color = if (state.permAutostartVisited)
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.primary
+                        )
+                    },
                 )
 
                 state.floatError?.let { err ->
