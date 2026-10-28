@@ -52,8 +52,25 @@ import java.io.File
 
 class MainActivity : ComponentActivity() {
 
-    private var server: GatewayServer? = null
+    // 网关由前台服务托管（照 McpService 范式）。
+    // 实测依据：Activity 销毁后网关线程随之结束，但 MCP 前台服务仍活。
+    private val server: GatewayServer?
+        get() = GatewayService.current
     private var appLogDir: File = File("/dev/null")
+
+    /** 网关服务状态监听：UI 以服务实际状态为准，不靠本地推测 */
+    private val gwStateListener = object : GatewayService.StateListener {
+        override fun onGatewayState(running: Boolean, port: Int, error: String?) {
+            mainState = mainState.copy(
+                running = running,
+                statusNote = error,
+            )
+            GateLog.info(
+                "gw", "state running=" + running + " port=" + port +
+                    (if (error != null) " err=" + error else "")
+            )
+        }
+    }
 
     /** MCP 服务状态监听（照 STRX 的 StateListener），UI 显示实际监听端口 */
     private val mcpStateListener = object : McpService.StateListener {
@@ -124,6 +141,7 @@ class MainActivity : ComponentActivity() {
         ProviderRepo.warmUpSecrets(this)
         // 订阅前台服务的真实状态：UI 端口显示以实际监听为准
         McpService.addListener(mcpStateListener)
+        GatewayService.addListener(gwStateListener)
 
         setContent {
             AppTheme {
@@ -362,7 +380,8 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
         McpService.removeListener(mcpStateListener)
-        server?.stop()
+        GatewayService.removeListener(gwStateListener)
+        // 网关由前台服务托管，Activity 销毁时不停止它（这是前台服务的目的）
         // MCP 由前台服务托管，Activity 销毁时**不能**停止它——
         // 否则退后台就断连，这正是改用 Service 的目的（照 STRX）。
         FloatingBall.detach()
@@ -454,9 +473,25 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    /**
+     * 读系统日志尾部。
+     *
+     * 修复：之前写的是 appLogDir（外部目录），读的却是 filesDir（内部目录），
+     * 两者路径不同，所以 UI 日志块永远空白。
+     * 现在统一读 appLogDir，并对外部目录读不到时回退内部目录（兼容旧装）。
+     */
     private fun tailLog(): String = try {
-        val f = File(filesDir, "logs/system/gateway.log")
-        if (!f.exists()) "" else f.readLines().takeLast(25).joinToString("\n")
+        val candidates = listOf(
+            File(appLogDir, "system/gateway.log"),
+            File(filesDir, "logs/system/gateway.log"),
+        )
+        val f = candidates.firstOrNull { it.exists() && it.length() > 0 }
+        if (f == null) {
+            // 明确告诉用户查了哪些路径，不再静默空白
+            "（日志未生成）已查找：\n" + candidates.joinToString("\n") { it.absolutePath }
+        } else {
+            f.readLines().takeLast(25).joinToString("\n")
+        }
     } catch (e: Exception) {
         "读取失败: $e"
     }
@@ -464,7 +499,7 @@ class MainActivity : ComponentActivity() {
     // ==================== 网关 ====================
 
     private fun startGateway() {
-        if (server?.isRunning() == true) return
+        if (GatewayService.running) return
         val port = mainState.port.toIntOrNull() ?: 38080
         val providers = ProviderRepo.runtimeProviders(this)
         val rules = ProviderRepo.runtimeRules(this)
@@ -472,40 +507,28 @@ class MainActivity : ComponentActivity() {
             mainState = mainState.copy(statusNote = "配置不完整，请先添加提供商与规则")
             return
         }
-        val policies = HashMap<String, RatePolicy>()
-        providers.forEach { policies[it.id] = it.ratePolicy }
-        val limiter = RateLimiter(policies, RatePolicy())
 
-        val vmodels = VirtualModelStore.load(this)
-        val srv = GatewayServer(port, providers, rules, limiter, "", vmodels)
-        // 注入路径供 /v1/_gw/diag 暴露，便于外部自助排查
-        srv.logDirPath = appLogDir.absolutePath
-        srv.configDirPath = filesDir.absolutePath
-        if (srv.start()) {
-            server = srv
-            mainState = mainState.copy(statusNote = null)
-            if (AppSettings.floatEnabled(this)) {
-                val ok = FloatingBall.attach(this)
-                if (!ok) {
-                    // 不再静默失败：明确告诉用户缺什么
-                    val err = FloatingBall.lastAttachError ?: "未知原因"
-                    GateLog.warn("float", "attach failed -> " + err)
-                    com.aqi.ccb.ui.UiToast.error("悬浮球未显示：" + err + "（设置→权限里开启悬浮窗）")
-                } else {
-                    FloatingBall.setState(FloatingBall.STATE_IDLE)
-                    FloatingBall.setMcpAlive(McpService.running)
-                }
+        // 交给前台服务：Activity 销毁也不停（这是本轮核心改动）
+        GatewayService.start(this, port)
+        GateLog.info("gw", "service start requested port=" + port)
+
+        if (AppSettings.floatEnabled(this)) {
+            val ok = FloatingBall.attach(this)
+            if (!ok) {
+                val err = FloatingBall.lastAttachError ?: "未知原因"
+                GateLog.warn("float", "attach failed -> " + err)
+                com.aqi.ccb.ui.UiToast.error("悬浮球未显示：" + err + "（设置→权限里开启悬浮窗）")
+            } else {
+                FloatingBall.setState(FloatingBall.STATE_IDLE)
+                FloatingBall.setMcpAlive(McpService.running)
             }
-            startMcpIfEnabled()
-        } else {
-            mainState = mainState.copy(statusNote = "启动失败：${srv.lastError}（端口被占用？）")
         }
+        startMcpIfEnabled()
         refreshMain()
     }
 
     private fun stopGateway() {
-        server?.stop()
-        server = null
+        GatewayService.stop(this)
         FloatingBall.detach()
         refreshMain()
     }
