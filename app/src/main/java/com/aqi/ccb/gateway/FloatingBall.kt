@@ -601,19 +601,28 @@ object FloatingBallState {
     /** MCP 是否存活：看真实 server 实例，不看静态 running 标志 */
     fun mcpAlive(): Boolean = McpService.current?.isRunning() == true
 
+    /** 失败窗口：60 秒 */
+    private const val FAIL_WINDOW_MS = 60_000L
+    /** 窗口内失败达到这个次数就判为「中断」，与熔断阈值一致 */
+    private const val FAIL_THRESHOLD = 3
+
     /**
      * 网关状态：
-     *   未运行            -> 待命
-     *   运行且有处理中请求 -> 生成
-     *   运行但空闲        -> 待命
+     *   未运行                    -> 待命
+     *   60s 内失败 >= 3 次        -> 中断（真实数据驱动）
+     *   运行且有处理中请求        -> 生成
+     *   运行但空闲                -> 待命
      *
-     * 不再使用「中断」——原代码定义了 STATE_ERROR 但从未有任何地方设置，
-     * 等于死状态。要恢复它需要真正的失败计数窗口，属于后续工作，
-     * 先不谎报。
+     * 「中断」不再是死状态：由 GatewayServer 的失败时间戳窗口驱动，
+     * 60 秒自然衰减，不会卡住不恢复。
+     * 优先级：中断 > 生成 > 待命 —— 连续失败比「正在跑」更需要被看见。
      */
     fun gatewayState(): String {
         val gw = GatewayService.current ?: return FloatingBall.STATE_IDLE
         if (!gw.isRunning()) return FloatingBall.STATE_IDLE
+        if (gw.recentFailureCountPublic(FAIL_WINDOW_MS) >= FAIL_THRESHOLD) {
+            return FloatingBall.STATE_ERROR
+        }
         return if (gw.inflightPublic() > 0) FloatingBall.STATE_RUNNING
         else FloatingBall.STATE_IDLE
     }
