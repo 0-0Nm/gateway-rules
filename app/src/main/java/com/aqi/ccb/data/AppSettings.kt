@@ -38,8 +38,15 @@ object AppSettings {
     fun setFloatEnabled(context: Context, v: Boolean) =
         prefs(context).edit().putBoolean(KEY_FLOAT_ENABLED, v).apply()
 
+    /**
+     * MCP 服务开关。
+     *
+     * 默认值改为 true，与悬浮窗（默认 true）保持一致。
+     * 之前默认 false 导致首次启动「悬浮窗开着、MCP 关着」的割裂状态。
+     * MCP 仅监听 127.0.0.1，只有本机可访问，默认开启风险可控。
+     */
     fun mcpEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_MCP_ENABLED, false)
+        prefs(context).getBoolean(KEY_MCP_ENABLED, true)
 
     fun setMcpEnabled(context: Context, v: Boolean) =
         prefs(context).edit().putBoolean(KEY_MCP_ENABLED, v).apply()
