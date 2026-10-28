@@ -366,6 +366,74 @@ object FloatingBall {
         GateLog.info("float", "detached")
     }
 
+    // ---------------- 看门狗 ----------------
+
+    private var watchdog: Runnable? = null
+    private var watchdogCtx: Context? = null
+
+    /**
+     * 启动悬浮球看门狗。
+     *
+     * 解决的问题：vivo 等 ROM 会 cgroup 冻结进程，解冻后 overlay 图层
+     * 可能已被 WindowManager 清理，而进程内引用仍非 null——
+     * 导致「以为挂着，其实没画面」。看门狗定期核对真实窗口状态并补挂。
+     *
+     * 只在 Service 里启动（进程级），Activity 不参与，避免双重定时器。
+     */
+    fun startWatchdog(context: Context, intervalMs: Long = 30_000L) {
+        stopWatchdog()
+        val app = context.applicationContext
+        watchdogCtx = app
+        val r = object : Runnable {
+            override fun run() {
+                runCatching { verifyAndHeal(app) }
+                main.postDelayed(this, intervalMs)
+            }
+        }
+        watchdog = r
+        main.postDelayed(r, intervalMs)
+        GateLog.info("float", "watchdog started interval=${intervalMs}ms")
+    }
+
+    fun stopWatchdog() {
+        watchdog?.let { main.removeCallbacks(it) }
+        watchdog = null
+        GateLog.info("float", "watchdog stopped")
+    }
+
+    /**
+     * 核对真实状态：先看进程内引用，再看窗口是否真的在屏幕上。
+     * 不一致就重建（先 detach 清引用，再 ensureAttached 重挂）。
+     */
+    private fun verifyAndHeal(ctx: Context) {
+        if (!com.aqi.ccb.data.AppSettings.floatEnabled(ctx)) {
+            if (mainView != null) detach()
+            return
+        }
+        val hasRef = mainView != null
+        val windowAlive = if (hasRef) isViewAttached(mainView) else false
+
+        if (hasRef && windowAlive) return   // 状态正常
+
+        if (hasRef && !windowAlive) {
+            GateLog.warn("float", "watchdog: view ref exists but window gone -> rebuild")
+            detach()   // 清掉失效引用
+        } else {
+            GateLog.warn("float", "watchdog: not mounted -> attach")
+        }
+        ensureAttached(ctx)
+    }
+
+    /** 判断 View 是否真的挂在窗口上 */
+    private fun isViewAttached(v: android.view.View?): Boolean {
+        if (v == null) return false
+        return try {
+            v.isAttachedToWindow && v.windowToken != null && v.isShown
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     /** 网关状态：待命 / 生成中 / 中断 */
     fun setState(state: String) {
         if (state == currentState) return
