@@ -53,19 +53,22 @@ object PermissionHelper {
     fun checkAll(ctx: Context): List<PermState> {
         val list = mutableListOf<PermState>()
 
-        // 1) 悬浮窗 —— 以系统 API 为权威，历史成功挂载仅作为假阴性的旁证
+        // 1) 悬浮窗 —— 以「能否真的挂上窗口」为权威证据
         //
-        // 修复前用 isMounted() 当第二信号：权限被撤销后，已 addView 的 View
-        // 不会立刻移除，isMounted() 仍 true —— 于是「权限已关」被误判成「已授予」。
-        // 现在只用「是否真的成功挂载过」这个持久化历史事实。
+        // 实测：vivo 上 settings.canDrawOverlays() 返回 false，
+        // 但 WindowManager.addView 完全成功、悬浮球正常显示。
+        // 说明系统 API 会假阴性，而 addView 成功是硬证据。
+        // 因此判定顺序：真挂着 > API 说可以 > 曾挂过(无法确认) > 全否
         val overlayApi = canDrawOverlays(ctx)
+        val overlayMounted = com.aqi.ccb.gateway.FloatingBall.isMounted()
         val overlayAttachedOnce = com.aqi.ccb.gateway.FloatingBall.everAttached(ctx)
-        val overlayGranted = overlayApi
         val overlayStatus = when {
-            overlayApi -> PermStatus.GRANTED
+            overlayMounted -> PermStatus.GRANTED   // 真挂着 = 权限铁定有效
+            overlayApi -> PermStatus.GRANTED       // API 说可以
             overlayAttachedOnce -> PermStatus.UNKNOWN
             else -> PermStatus.DENIED
         }
+        val overlayGranted = overlayStatus == PermStatus.GRANTED
         list.add(
             PermState(
                 key = KEY_OVERLAY,
@@ -78,7 +81,8 @@ object PermissionHelper {
                     PermStatus.DENIED -> "悬浮球不会显示（当前被系统拒绝）"
                 },
                 status = overlayStatus,
-                evidence = "api=" + overlayApi + " everAttached=" + overlayAttachedOnce,
+                evidence = "mounted=" + overlayMounted + " api=" + overlayApi +
+                    " ever=" + overlayAttachedOnce,
             )
         )
 
@@ -128,6 +132,7 @@ object PermissionHelper {
 
     /** 悬浮窗状态名：GRANTED / DENIED / UNKNOWN */
     fun overlayStatusName(ctx: Context): String = when {
+        com.aqi.ccb.gateway.FloatingBall.isMounted() -> PermStatus.GRANTED.name
         canDrawOverlays(ctx) -> PermStatus.GRANTED.name
         com.aqi.ccb.gateway.FloatingBall.everAttached(ctx) -> PermStatus.UNKNOWN.name
         else -> PermStatus.DENIED.name
@@ -251,6 +256,7 @@ object PermissionHelper {
             }
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             ctx.startActivity(intent)
+            GateLog.info("perm", "openSettings(" + key + ") -> " + intent.action + " " + intent.data)
             // 记录"用户已前往该项设置"，供下次判定时区分"真的没开"与"API 读不准"
             markPermissionOpened(ctx, key)
             true
