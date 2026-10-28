@@ -287,6 +287,33 @@ class McpServer(
                 })
             }
         ))
+        arr.put(tool(
+            "gw_get_ui_style",
+            "读取当前 UI 样式配置：基准圆角、收缩下限、右下角固定角、透明度等。" +
+                "圆角算法为行数自适应：行数≤2 用基准角，行数>2 每行收缩，右下角恒为小角。",
+            JSONObject().put("type", "object").put("properties", JSONObject())
+        ))
+        arr.put(tool(
+            "gw_set_ui_style",
+            "修改 UI 样式（只传要改的字段，其余保持不变）。改完即时生效，无需重启。" +
+                "可用字段：baseRadius(基准圆角dp,默认22) / minRadius(收缩下限,12) / " +
+                "bottomEndRadius(右下角固定,8) / shrinkStep(每行收缩dp,2) / " +
+                "shrinkAfterLines(超过几行开始收缩,2) / dynamicRadius(是否启用自适应,true) / " +
+                "cardAlpha(卡片不透明度0-100,100) / innerCornerEnabled(分组内小圆角,true)",
+            JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("baseRadius", schema("integer", "基准圆角 dp，默认 22"))
+                    put("minRadius", schema("integer", "圆角收缩下限 dp，默认 12"))
+                    put("bottomEndRadius", schema("integer", "右下角固定圆角 dp，默认 8"))
+                    put("shrinkStep", schema("integer", "每多一行收缩的 dp，默认 2"))
+                    put("shrinkAfterLines", schema("integer", "超过几行开始收缩，默认 2"))
+                    put("dynamicRadius", schema("boolean", "是否启用行数自适应"))
+                    put("cardAlpha", schema("integer", "卡片不透明度 0-100"))
+                    put("innerCornerEnabled", schema("boolean", "分组内是否用小圆角"))
+                })
+            }
+        ))
         return JSONObject().apply { put("tools", arr) }
     }
 
@@ -308,6 +335,8 @@ class McpServer(
                 "gw_list_virtual_models" -> cfg.listVirtualModelsJson()
                 "gw_get_status" -> cfg.statusJson(gatewayPort)
                 "gw_read_log" -> cfg.readLog(args.optInt("lines", 50))
+                "gw_get_ui_style" -> cfg.getUiStyleJson()
+                "gw_set_ui_style" -> cfg.setUiStyle(args.toString())
                 else -> """{"error":"unknown tool: $name"}"""
             }
         } catch (e: Exception) {
@@ -420,4 +449,8 @@ interface McpConfig {
     fun listVirtualModelsJson(): String
     fun statusJson(gatewayPort: Int): String
     fun readLog(lines: Int): String
+    /** 读取 UI 样式配置（圆角/透明度等） */
+    fun getUiStyleJson(): String
+    /** 按 JSON patch 修改 UI 样式，返回改后完整配置 */
+    fun setUiStyle(patchJson: String): String
 }
