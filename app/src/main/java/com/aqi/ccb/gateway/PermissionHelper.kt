@@ -225,7 +225,34 @@ object PermissionHelper {
                     appDetailIntent(ctx)
                 }
                 KEY_BATTERY -> {
-                    // 1) 首选标准 Intent（需要 Manifest 的 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS）
+                    // 实测 vivo：带 package 的 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                    // 会被系统静默拦截（直接回桌面，无任何报错），
+                    // 而列表页 IGNORE_BATTERY_OPTIMIZATION_SETTINGS 能正常打开
+                    // com.iqoo.powersaving.BackgroundHighUsageActivity。
+                    // 所以顺序改为：列表页 -> 厂商直连页 -> 带包名页 -> 应用详情页
+
+                    // 1) 电池优化列表页（各 ROM 通用，最可靠）
+                    try {
+                        ctx.startActivity(
+                            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        markPermissionOpened(ctx, key)
+                        lastOpenDegraded = false
+                        lastOpenTarget = "电池优化列表页（请在本应用上选择「不限制」）"
+                        return true
+                    } catch (_: Exception) {
+                    }
+
+                    // 2) 厂商电池管理直连页
+                    if (openVendorBatteryPage(ctx)) {
+                        markPermissionOpened(ctx, key)
+                        lastOpenDegraded = false
+                        lastOpenTarget = "厂商电池管理页"
+                        return true
+                    }
+
+                    // 3) 带包名的标准页（部分 ROM 支持）
                     try {
                         ctx.startActivity(
                             Intent(
@@ -238,16 +265,9 @@ object PermissionHelper {
                         lastOpenTarget = "系统电池优化页"
                         return true
                     } catch (_: Exception) {
-                        // vivo / 部分 ROM 会拦截这个 Intent，落到厂商电池管理页
                     }
-                    // 2) 厂商电池管理页
-                    if (openVendorBatteryPage(ctx)) {
-                        markPermissionOpened(ctx, key)
-                        lastOpenDegraded = false
-                        lastOpenTarget = "厂商电池管理页"
-                        return true
-                    }
-                    // 3) 兜底：应用详情页（这里没有电池开关，必须告知用户）
+
+                    // 4) 兜底：应用详情页（没有电池开关，必须明确告知）
                     lastOpenDegraded = true
                     lastOpenTarget = "应用详情页（无电池开关）"
                     appDetailIntent(ctx)
@@ -280,8 +300,12 @@ object PermissionHelper {
      */
     private fun openVendorBatteryPage(ctx: Context): Boolean {
         val candidates = listOf(
-            // vivo / iQOO：后台高耗电
-            "com.vivo.abe" to "com.vivo.applicationbehaviorengine.ui.ExcessivePowerManagerActivity",
+            // vivo / iQOO：实测 com.vivo.abe 的 ExcessivePowerManagerActivity
+            // 需要 com.vivo.abe.permission.action.openhpactivity（厂商签名），
+            // 第三方必被 SecurityException 拒绝，故移除。
+            // com.iqoo.powersaving 的 BackgroundHighUsageActivity 才可达
+            // （能由 IGNORE_BATTERY_OPTIMIZATION_SETTINGS 拉起，说明无签名限制）。
+            "com.iqoo.powersaving" to "com.iqoo.powersaving.BackgroundHighUsageActivity",
             "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager",
             // 小米
             "com.miui.powerkeeper" to "com.miui.powerkeeper.ui.HiddenAppsConfigActivity",
