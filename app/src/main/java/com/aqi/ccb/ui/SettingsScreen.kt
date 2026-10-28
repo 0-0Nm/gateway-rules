@@ -90,6 +90,8 @@ fun SettingsScreen(
     onMcpPortApply: (() -> Unit)? = null,
     onOpenPerm: ((String) -> Unit)? = null,
     onRequestAllPerms: (() -> Unit)? = null,
+    onOpenAutoStart: (() -> Unit)? = null,
+    freezeProneRom: Boolean = false,
 ) {
     Scaffold(
         topBar = {
@@ -363,6 +365,24 @@ fun SettingsScreen(
                     trailingContent = {
                         Text(if (state.permBattery) "✓" else "去设置")
                     },
+                )
+
+                // ---- 厂商自启动（唯一能真正解冻的路径）----
+                item(
+                    onClick = { onOpenAutoStart?.invoke() },
+                    headlineContent = { Text("自启动 / 后台运行管理") },
+                    supportingContent = {
+                        Text(
+                            if (freezeProneRom)
+                                "本机为 ${android.os.Build.BRAND}：息屏后系统会冻结进程" +
+                                    "（服务还在但不响应），必须在此加入允许列表"
+                            else "点击前往系统设置，允许后台运行",
+                            color = if (freezeProneRom)
+                                MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    trailingContent = { Text("去设置") },
                 )
 
                 state.floatError?.let { err ->
