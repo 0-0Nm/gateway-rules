@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * 零第三方依赖：ServerSocket + HttpURLConnection。
  */
 class GatewayServer(
-    private val port: Int,
+    val port: Int,   // 公开：供 GatewayService / diag 读取实际监听端口
     private var providers: List<Provider>,
     private var rules: List<RuleSpec>,
     private val limiter: RateLimiter,
