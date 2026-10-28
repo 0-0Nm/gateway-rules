@@ -20,8 +20,12 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object SwitchPolicy {
 
-    /** 键 -> providerId */
-    private val bindings = ConcurrentHashMap<String, String>()
+    /** 键 -> (providerId, 绑定时刻ms)。带时间戳是为了 TTL 过期，
+     *  否则一次错误绑定会永久贴住同一家（wb.apk 的 sticky_ttl_min 默认 30 分钟）。 */
+    private val bindings = ConcurrentHashMap<String, Pair<String, Long>>()
+
+    /** 粘性有效期（毫秒），默认 30 分钟；<=0 表示永不过期 */
+    @Volatile var ttlMs: Long = 30L * 60 * 1000
 
     /** 会话 -> 最后使用的 provider（CALL 粒度审计用） */
     private val lastUsed = ConcurrentHashMap<String, String>()
@@ -46,7 +50,14 @@ object SwitchPolicy {
                 sessionId: String, turnIndex: Int): List<Cand> {
         if (cands.isEmpty()) return cands
         val key = stickKey(granularity, sessionId, turnIndex) ?: return cands
-        val bound = bindings[key] ?: return cands
+        val entry = bindings[key] ?: return cands
+        val bound = entry.first
+        // TTL 过期则丢弃绑定，重新选路
+        if (ttlMs > 0 && System.currentTimeMillis() - entry.second > ttlMs) {
+            bindings.remove(key)
+            GateLog.info("switch", "sticky expired key=$key -> reselect")
+            return cands
+        }
         val hit = cands.firstOrNull { it.p.id == bound }
         if (hit == null) {
             // 绑定的 provider 不在候选里 -> 自动降级，同时清掉失效绑定
@@ -64,7 +75,7 @@ object SwitchPolicy {
         if (sessionId.isEmpty()) return
         lastUsed[sessionId] = providerId
         val key = stickKey(granularity, sessionId, turnIndex) ?: return
-        bindings[key] = providerId
+        bindings[key] = providerId to System.currentTimeMillis()
     }
 
     fun lastProvider(sessionId: String): String? = lastUsed[sessionId]
