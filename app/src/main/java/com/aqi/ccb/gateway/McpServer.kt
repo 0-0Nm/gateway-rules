@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   返回 {"jsonrpc":"2.0","id":1,"result":{...}}
  */
 class McpServer(
-    private val port: Int,
+    val port: Int,   // 公开：供 UI 显示「实际监听的端口」
     private val gatewayPort: Int,
     private val configProvider: () -> McpConfig,
 ) {
