@@ -66,7 +66,9 @@ class GatewayService : Service() {
 
         fun setPendingLogDir(path: String) {
             pendingLogDir = path
-            current?.setLogDir(path)
+            // current 是 GatewayServer（不是 Service），它只有 logDirPath 属性，
+            // 没有 setLogDir 方法——之前写成 setLogDir 导致编译失败。
+            current?.logDirPath = path
         }
 
         private val listeners = java.util.concurrent.CopyOnWriteArrayList<StateListener>()
