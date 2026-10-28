@@ -316,6 +316,15 @@ class MainActivity : ComponentActivity() {
                             // 最后 MCP 停在半截端口，UI 却显示完整值 -> "连不上"
                             settingsState = settingsState.copy(mcpPort = p)
                         },
+                        onOpenAutoStart = {
+                            val ok = com.aqi.ccb.gateway.PermissionHelper.openAutoStart(this)
+                            if (!ok) {
+                                com.aqi.ccb.ui.UiToast.error(
+                                    "打不开自启动管理，请手动到 设置→应用管理→权限管理→自启动"
+                                )
+                            }
+                        },
+                        freezeProneRom = com.aqi.ccb.gateway.PermissionHelper.isFreezeProneRom(),
                         onOpenPerm = { key ->
                             val ok = com.aqi.ccb.gateway.PermissionHelper.openSettings(this, key)
                             val degraded = com.aqi.ccb.gateway.PermissionHelper.lastOpenDegraded
