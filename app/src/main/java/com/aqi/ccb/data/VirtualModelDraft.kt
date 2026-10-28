@@ -14,6 +14,8 @@ data class VirtualModelDraft(
     val enabled: Boolean = true,
     /** "providerId|modelId" 形式的成员列表 */
     val members: List<String> = emptyList(),
+    /** 请求变换链（指纹清洗/UA伪装/prompt 注入），随虚拟模型一起存取 */
+    val transforms: List<com.aqi.ccb.gateway.TransformSpec> = emptyList(),
 ) {
     val isComplete: Boolean get() = name.isNotBlank() && members.isNotEmpty()
 
@@ -22,6 +24,11 @@ data class VirtualModelDraft(
         put("description", description)
         put("enabled", enabled)
         put("ruleId", ruleId)
+        if (transforms.isNotEmpty()) {
+            put("transforms", JSONArray().apply {
+                transforms.forEach { put(it.toJson()) }
+            })
+        }
         put("members", JSONArray().apply {
             members.forEachIndexed { idx, m ->
                 val parts = m.split('|')
@@ -49,6 +56,8 @@ data class VirtualModelDraft(
                 }
             } ?: emptyList()
             return VirtualModelDraft(
+                transforms = com.aqi.ccb.gateway.TransformSpec
+                    .parseList(o.optJSONArray("transforms")),
                 name = o.optString("name", ""),
                 description = o.optString("description", ""),
                 ruleId = o.optString("ruleId", "default"),
