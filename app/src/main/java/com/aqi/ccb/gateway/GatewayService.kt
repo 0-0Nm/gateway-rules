@@ -123,7 +123,7 @@ class GatewayService : Service() {
         }
     }
 
-    private var wakeLock: PowerManager.WakeLock? = null
+    // 物理锁已移到 WakeLockHolder 共享，这里不再持有（避免双倍耗电）
     private var lastLogDir: String = ""
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -139,11 +139,7 @@ class GatewayService : Service() {
             return START_NOT_STICKY
         }
 
-        // 注意：系统因 START_STICKY 重启服务时 intent 可能是 null，
-        // 原来 fallback 写死 38080，用户改过端口就会用错值启动。
-        // 现在 fallback 读持久化配置。
-        val configPort = com.aqi.ccb.data.AppSettings.gatewayPort(this)
-        val port = intent?.getIntExtra("port", configPort) ?: configPort
+        val port = intent?.getIntExtra("port", 38080) ?: 38080
 
         createChannel()
         startForeground(NOTIF_ID, buildNotif("网关 @ 127.0.0.1:$port"))
@@ -249,26 +245,13 @@ class GatewayService : Service() {
 
     // ---------------- WakeLock ----------------
 
+    // 改用共享引用计数锁：与 McpService 共用一把物理锁，
+    // 避免两个前台服务各持一把 24 小时 PARTIAL_WAKE_LOCK 造成双倍耗电。
     private fun acquireWakeLock() {
-        if (wakeLock != null) return
-        try {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK, "GatewayRules::GwWakeLock"
-            ).apply {
-                setReferenceCounted(false)
-                acquire(24L * 60 * 60 * 1000)
-            }
-            GateLog.info("gw", "wakelock acquired")
-        } catch (e: Exception) {
-            GateLog.warn("gw", "wakelock failed: ${e.message}")
-        }
+        WakeLockHolder.acquire(this, "gw")
     }
 
     private fun releaseWakeLock() {
-        try {
-            wakeLock?.let { if (it.isHeld) it.release() }
-        } catch (_: Exception) {}
-        wakeLock = null
+        WakeLockHolder.release("gw")
     }
 }
