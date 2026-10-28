@@ -70,10 +70,18 @@ def push_one(local, remote, message, dry):
     commit = res["commit"]["sha"][:7]
 
     # ---- 回读校验：这是本工具存在的理由 ----
-    back = api("GET", "/repos/%s/contents/%s?ref=%s" % (REPO, remote, BRANCH))
-    back_txt = base64.b64decode(back["content"]).decode("utf-8")
+    # GitHub contents API 有最终一致性延迟，刚 PUT 完立刻 GET 可能拿到旧内容。
+    # 所以重试几次再判定失败，避免误报。
+    import time as _t
+    back_txt = ""
+    for attempt in range(5):
+        _t.sleep(1.5 if attempt else 0.5)
+        back = api("GET", "/repos/%s/contents/%s?ref=%s" % (REPO, remote, BRANCH))
+        back_txt = base64.b64decode(back["content"]).decode("utf-8")
+        if back_txt == local_txt:
+            break
     if back_txt != local_txt:
-        print("VERIFY_FAIL  %-24s 远端回读与本地不一致！本地 %d B，远端 %d B"
+        print("VERIFY_FAIL  %-24s 远端回读与本地不一致（重试5次）！本地 %d B，远端 %d B"
               % (remote.split("/")[-1], len(local_txt), len(back_txt)))
         return False
 
