@@ -141,7 +141,16 @@ fun SettingsScreen(
                     onCheckedChange = onFloatToggle,
                     headlineContent = { Text("启用悬浮球") },
                     supportingContent = {
-                        Text("显示网关状态（待命白/生成蓝/中断红），单击锁定，长按2秒解锁")
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("显示网关状态（待命白/生成蓝/中断红），单击锁定，长按2秒解锁")
+                            Text(
+                                "⚠ vivo / iQOO 等定制系统：系统「权限查询」可能报未授予，" +
+                                    "但悬浮球实际能正常显示 —— 这是系统判定不完整，" +
+                                    "不是真的缺权限。以本页下方「权限」区状态为准。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.tertiary,
+                            )
+                        }
                     },
                 )
             }
