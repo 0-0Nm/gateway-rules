@@ -520,7 +520,13 @@ class MainActivity : ComponentActivity() {
         lastPermCheckMs = now
 
         val list = com.aqi.ccb.gateway.PermissionHelper.checkAll(this)
-        val missing = list.filter { !it.granted }
+        // 只对「确实不可用」的项弹窗：
+        //   DENIED   真的缺，功能受影响 -> 必须提示
+        //   CONFLICT 系统报未授予但功能正常 -> 不打扰，设置页里说明即可
+        //   UNKNOWN  无法确认 -> 不打扰
+        val missing = list.filter {
+            it.status == com.aqi.ccb.gateway.PermissionHelper.PermStatus.DENIED
+        }
         if (missing.isEmpty()) {
             permPrompt = emptyList()
             return
