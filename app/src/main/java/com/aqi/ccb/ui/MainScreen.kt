@@ -27,12 +27,15 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -65,6 +68,19 @@ data class MainUiState(
     val rules: List<RuleRow> = emptyList(),
     val logTail: String = "",
     val statusNote: String? = null,
+    // ---- 实时监控 / 路径诊断（照 DeepSeek 本地 API 面板）----
+    val diagPath: String = "",
+    val diagBind: String = "",
+    val diagAcceptAlive: Boolean = false,
+    val diagTcpConns: Int = 0,
+    val diagDisconnects: Long = 0,
+    val diagWorkers: Int = 0,
+    val diagQueued: Int = 0,
+    val diagUptimeSec: Long = 0,
+    val diagLatestRoute: String = "",
+    val diagLatestFailure: String = "",
+    val diagFailureReason: String = "",
+    val diagLanHint: String = "",
 )
 
 data class ProviderRow(
@@ -101,6 +117,7 @@ fun MainScreen(
     onAddVirtual: () -> Unit = {},
     onEditVirtual: (String) -> Unit = {},
     onFloatAlpha: (Int) -> Unit = {},
+    onCopyApiKey: () -> Unit = {},
 ) {
     Scaffold(
         topBar = {
@@ -207,6 +224,94 @@ fun MainScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
+                    }
+                }
+            }
+            }
+
+            // ==================== 实时监控与路径诊断（聚合 tab）====================
+            if (currentTab == "agg") {
+            Spacer(Modifier.height(8.dp))
+            CardGroup(title = { Text("实时监控") }) {
+                // 路径诊断：最值钱的一条，直接告诉用户"为什么连不上"
+                formItem(
+                    headlineContent = { Text("路径诊断") },
+                    supportingContent = {
+                        Text(
+                            state.diagPath.ifBlank { "启动网关后显示" },
+                            color = if (state.diagPath.contains("正常") ||
+                                state.diagPath.contains("空闲"))
+                                MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        MonitorRow("实际绑定", state.diagBind.ifBlank { "—" })
+                        MonitorRow("accept 线程", if (state.diagAcceptAlive) "Alive" else "Dead")
+                        MonitorRow("TCP 连接", state.diagTcpConns.toString())
+                        MonitorRow("客户端断开", state.diagDisconnects.toString())
+                        MonitorRow("HTTP 线程", "${state.diagWorkers} 活跃 / ${state.diagQueued} 排队")
+                        MonitorRow("运行时长", fmtUptime(state.diagUptimeSec))
+                        MonitorRow("最近路由", state.diagLatestRoute.ifBlank { "—" })
+                        if (state.diagFailureReason.isNotBlank()) {
+                            MonitorRow("最近失败", state.diagFailureReason)
+                        }
+                    }
+                }
+            }
+
+            // ==================== 连接配置（一键复制）====================
+            Spacer(Modifier.height(8.dp))
+            CardGroup(title = { Text("连接配置") }) {
+                formItem(
+                    headlineContent = { Text("本机地址") },
+                    supportingContent = { Text("客户端 base_url 填这个") },
+                ) {
+                    val cb = LocalClipboardManager.current
+                    Column {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = "http://127.0.0.1:${state.port}/v1",
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFont),
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                cb.setText(AnnotatedString("http://127.0.0.1:${state.port}/v1"))
+                                UiToast.show("已复制本机地址")
+                            }) { Text("复制 URL") }
+                            OutlinedButton(onClick = onCopyApiKey) {
+                                Text("复制 API Key")
+                            }
+                        }
+                    }
+                }
+
+                if (state.diagLanHint.isNotBlank()) {
+                    formItem(
+                        headlineContent = { Text("局域网地址") },
+                        supportingContent = { Text("同 WiFi 的其他设备用这个") },
+                    ) {
+                        val cb = LocalClipboardManager.current
+                        Column {
+                            Text(
+                                text = state.diagLanHint,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFont),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            OutlinedButton(onClick = {
+                                cb.setText(AnnotatedString(state.diagLanHint))
+                                UiToast.show("已复制局域网地址")
+                            }) { Text("复制局域网地址") }
+                        }
                     }
                 }
             }
@@ -360,5 +465,35 @@ fun MainScreen(
             Spacer(Modifier.height(32.dp))
             }
         }
+    }
+}
+
+/** 监控面板的单行指标：左标签右值 */
+@Composable
+private fun MonitorRow(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFont),
+        )
+    }
+}
+
+/** 秒 -> 人话时长 */
+private fun fmtUptime(sec: Long): String {
+    if (sec <= 0) return "—"
+    val h = sec / 3600
+    val m = (sec % 3600) / 60
+    val s2 = sec % 60
+    return when {
+        h > 0 -> "${h}h${m}m"
+        m > 0 -> "${m}m${s2}s"
+        else -> "${s2}s"
     }
 }
