@@ -173,6 +173,71 @@ object RequestTransform {
         return true
     }
 
+    /**
+     * 参数自动修复 —— 照 wb.apk 的
+     * "11133 max_tokens rejected -> rewritten to max_completion_tokens, retrying in place"。
+     *
+     * 上游对参数的接受度不一（有些新模型只认 max_completion_tokens），
+     * 收到 400 且文案指向参数时，就地改名重试，用户无感。
+     *
+     * @return 修复后的 body；无需修复时返回 null
+     */
+    fun autoFixParams(body: ByteArray, errText: String): Pair<ByteArray, String>? {
+        val e = errText.lowercase()
+        val j = try {
+            JSONObject(String(body, Charsets.UTF_8))
+        } catch (_: Exception) {
+            return null
+        }
+
+        // 规则 1：max_tokens 不被支持 -> max_completion_tokens
+        if ((e.contains("max_tokens") || e.contains("max completion"))
+            && (e.contains("unsupported") || e.contains("not support")
+                || e.contains("unrecognized") || e.contains("invalid")
+                || e.contains("unknown"))
+        ) {
+            if (j.has("max_tokens") && !j.has("max_completion_tokens")) {
+                j.put("max_completion_tokens", j.get("max_tokens"))
+                j.remove("max_tokens")
+                return j.toString().toByteArray(Charsets.UTF_8) to
+                    "max_tokens->max_completion_tokens"
+            }
+        }
+
+        // 规则 2：不支持 stream_options -> 删掉
+        if (e.contains("stream_options") &&
+            (e.contains("unsupported") || e.contains("unrecognized") || e.contains("invalid"))
+        ) {
+            if (j.has("stream_options")) {
+                j.remove("stream_options")
+                return j.toString().toByteArray(Charsets.UTF_8) to "strip stream_options"
+            }
+        }
+
+        // 规则 3：不支持 tools / tool_choice -> 删掉后重试（降级为纯文本）
+        if ((e.contains("tools") || e.contains("tool_choice"))
+            && (e.contains("unsupported") || e.contains("unrecognized"))
+        ) {
+            if (j.has("tools") || j.has("tool_choice")) {
+                j.remove("tools")
+                j.remove("tool_choice")
+                j.remove("parallel_tool_calls")
+                return j.toString().toByteArray(Charsets.UTF_8) to "strip tools"
+            }
+        }
+
+        // 规则 4：temperature 范围不对 -> 夹到 [0,2]
+        if (e.contains("temperature") && e.contains("invalid")) {
+            if (j.has("temperature")) {
+                val t = j.optDouble("temperature", 1.0)
+                j.put("temperature", t.coerceIn(0.0, 2.0))
+                return j.toString().toByteArray(Charsets.UTF_8) to "clamp temperature"
+            }
+        }
+
+        return null
+    }
+
     fun shouldRemove(name: String, removeHeaders: Set<String>): Boolean {
         val n = name.lowercase()
         if (n in ALWAYS_STRIP) return true
