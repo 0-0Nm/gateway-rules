@@ -424,6 +424,14 @@ object FloatingBall {
         ensureAttached(ctx)
     }
 
+    /**
+     * 对外查询：悬浮球此刻是否真的挂在窗口上。
+     *
+     * 供 PermissionHelper 做「权限判定第二信号」——
+     * 有些 ROM 的 canDrawOverlays() 会假阴性，但只要球能挂上就说明权限确实有效。
+     */
+    fun isMounted(): Boolean = isViewAttached(mainView)
+
     /** 判断 View 是否真的挂在窗口上 */
     private fun isViewAttached(v: android.view.View?): Boolean {
         if (v == null) return false
