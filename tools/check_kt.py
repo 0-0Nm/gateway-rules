@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-check_kt.py v2 —— Kotlin 跨文件一致性检查（推送前 lint）
+check_kt.py v3 —— Kotlin 跨文件一致性检查（推送前 lint）
 
-v1 误报率约 90%，已修正三个根本缺陷：
-  1 三引号字符串内的括号未剥离 -> 花括号误报
-  2 嵌套调用（lambda 内的 Text(color=X)）被归到外层函数 -> 参数误报
-  3 子串匹配（SwitchPolicy 命中 Switch）-> import 误报
+五项检查（每项都对应一次真实踩过的坑）：
+  A 花括号配平（剥离字符串/注释后）
+  B 命名参数不存在（构造函数/函数调用用了声明里没有的参数）
+  C 高频 Compose 符号缺 import
+  D companion object 内声明的类型被外部用 Outer.Name 引用
+    —— 实例：GatewayService.StateListener 放 companion 里导致 Unresolved reference
+  E Composable 回调型可选参数未被传入
+    —— 实例：SettingsScreen(onOpenAutoStart = null) 没传 -> 点「自启动」毫无反应
 
-能查：
-  A 命名参数不存在（仅取 depth-1 参数，排除嵌套）
-  B data class 字段被删但别处仍引用
-  C 高频 Compose 符号缺 import（词边界匹配）
-  D 花括号配平（剥离字符串/注释后）
-
-查不了：类型错误、方法不存在、泛型不匹配。这是启发式，不是编译器。
+局限：查不了类型错误、方法不存在、泛型不匹配。这是启发式，不是编译器。
 """
 import os, re, sys
 
@@ -29,6 +27,8 @@ SYMBOL_IMPORTS = {
     "IconButton": "androidx.compose.material3.IconButton",
     "TopAppBar": "androidx.compose.material3.TopAppBar",
     "Scaffold": "androidx.compose.material3.Scaffold",
+    "Surface": "androidx.compose.material3.Surface",
+    "AlertDialog": "androidx.compose.material3.AlertDialog",
     "LocalClipboardManager": "androidx.compose.ui.platform.LocalClipboardManager",
     "AnnotatedString": "androidx.compose.ui.text.AnnotatedString",
     "rememberScrollState": "androidx.compose.foundation.rememberScrollState",
@@ -50,22 +50,17 @@ def read_files():
 
 def strip_comments_and_strings(s):
     """剥离注释与字符串（含三引号），保留换行以维持行号"""
-    # 三引号字符串 -> 占位（保留换行数）
     def repl_triple(m):
         return '""' + "\n" * m.group(0).count("\n")
     s = re.sub(r'"""[\s\S]*?"""', repl_triple, s)
-    # 普通字符串（含模板 ${} 整体吃掉）
     s = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', s)
-    # 字符字面量
     s = re.sub(r"'(?:[^'\\\n]|\\.)*'", "''", s)
-    # 注释
     s = re.sub(r"/\*[\s\S]*?\*/", lambda m: "\n" * m.group(0).count("\n"), s)
     s = re.sub(r"//[^\n]*", "", s)
     return s
 
 
 def balanced(s, open_idx):
-    """从 s[open_idx] 的 '(' 取到配对的 ')' 内部文本"""
     depth = 0
     i = open_idx
     while i < len(s):
@@ -81,16 +76,13 @@ def balanced(s, open_idx):
 
 
 def top_level_args(body):
-    """只取 depth-1 的命名参数名，排除嵌套调用里的"""
     if body is None:
         return set()
     names = set()
     depth = 0
-    i = 0
     start = 0
     segments = []
-    while i < len(body):
-        c = body[i]
+    for i, c in enumerate(body):
         if c in "([{":
             depth += 1
         elif c in ")]}":
@@ -98,9 +90,7 @@ def top_level_args(body):
         elif c == "," and depth == 0:
             segments.append(body[start:i])
             start = i + 1
-        i += 1
     segments.append(body[start:])
-
     for seg in segments:
         m = re.match(r"\s*(\w+)\s*=(?!=)", seg)
         if m:
@@ -113,24 +103,30 @@ def parse_decls(files):
     for p, src in files.items():
         s = strip_comments_and_strings(src)
         for m in re.finditer(r"\bdata\s+class\s+(\w+)\s*(?:<[^>]*>)?\s*\(", s):
-            name = m.group(1)
             body = balanced(s, m.end() - 1)
-            if body is None:
-                continue
-            fields = set(re.findall(r"\b(?:val|var)\s+(\w+)\s*[:=]", body))
-            classes.setdefault(name, set()).update(fields)
+            if body:
+                classes.setdefault(m.group(1), set()).update(
+                    re.findall(r"\b(?:val|var)\s+(\w+)\s*[:=]", body))
         for m in re.finditer(r"\bfun\s+(?:<[^>]*>\s*)?(\w+)\s*\(", s):
-            name = m.group(1)
             body = balanced(s, m.end() - 1)
-            if body is None:
-                continue
-            params = set()
-            for seg in body.split(","):
-                pm = re.match(r"\s*(?:@\w+\s+)*(\w+)\s*:", seg)
-                if pm:
-                    params.add(pm.group(1))
-            funcs.setdefault(name, set()).update(params)
+            if body:
+                params = set()
+                for seg in body.split(","):
+                    pm = re.match(r"\s*(?:@\w+\s+)*(\w+)\s*:", seg)
+                    if pm:
+                        params.add(pm.group(1))
+                funcs.setdefault(m.group(1), set()).update(params)
     return classes, funcs
+
+
+def check_braces(files):
+    issues = []
+    for p, src in files.items():
+        s = strip_comments_and_strings(src)
+        o, c = s.count("{"), s.count("}")
+        if o != c:
+            issues.append("%s  花括号不配平: { %d / } %d" % (p, o, c))
+    return issues
 
 
 def check_named_args(files, classes, funcs):
@@ -139,13 +135,10 @@ def check_named_args(files, classes, funcs):
         s = strip_comments_and_strings(src)
         for m in re.finditer(r"\b([A-Z]\w*)\s*\(", s):
             name = m.group(1)
-            # 同时查 data class 构造 与 普通函数调用
-            # top_level_args 已排除嵌套 lambda 内的参数，故 DSL 方法不会误报
             decl = classes.get(name) or funcs.get(name)
             if decl is None:
                 continue
-            body = balanced(s, m.end() - 1)
-            named = top_level_args(body)
+            named = top_level_args(balanced(s, m.end() - 1))
             missing = named - decl
             if missing:
                 line = s[:m.start()].count("\n") + 1
@@ -162,19 +155,84 @@ def check_imports(files):
         for sym, imp in SYMBOL_IMPORTS.items():
             if imp in imports:
                 continue
-            if not re.search(r"\b" + re.escape(sym) + r"\s*\(", s):
+            # 全限定名调用（androidx.compose.material3.AlertDialog(...)）不需要 import
+            if re.search(r"\b\w+(?:\.\w+)*\." + re.escape(sym) + r"\s*\(", s):
+                continue
+            if not re.search(r"(?<![\w.])" + re.escape(sym) + r"\s*\(", s):
                 continue
             issues.append("%s  用到 %s( 但缺 import %s" % (p, sym, imp))
     return issues
 
 
-def check_braces(files):
+def check_companion_nesting(files):
     issues = []
+    nested = {}
     for p, src in files.items():
         s = strip_comments_and_strings(src)
-        o, c = s.count("{"), s.count("}")
-        if o != c:
-            issues.append("%s  花括号不配平: { %d / } %d" % (p, o, c))
+        for m in re.finditer(r"\b(?:class|object)\s+(\w+)", s):
+            cls = m.group(1)
+            after = s[m.end():]
+            ci = after.find("companion object")
+            if ci < 0:
+                continue
+            body = balanced(after, after.find("{", ci))
+            if not body:
+                continue
+            inner = set(re.findall(r"\b(?:interface|class)\s+(\w+)", body))
+            if inner:
+                nested.setdefault(cls, set()).update(inner)
+    if not nested:
+        return issues
+    for p, src in files.items():
+        s = strip_comments_and_strings(src)
+        for cls, names in nested.items():
+            for n in names:
+                pat = r"\b" + cls + r"\." + n + r"\b"
+                for m in re.finditer(pat, s):
+                    line = s[:m.start()].count("\n") + 1
+                    issues.append(
+                        "%s:%d  %s.%s 不存在——%s 声明在 %s 的 companion 内，"
+                        "外部应写 %s.Companion.%s 或移到类层级"
+                        % (p, line, cls, n, n, cls, cls, n))
+    return issues
+
+
+def check_optional_params(files, funcs):
+    """Composable 声明了回调型可选参数，但调用处一个都没传 -> 点了没反应"""
+    issues = []
+    callback_funcs = {}
+    for p, src in files.items():
+        s = strip_comments_and_strings(src)
+        for m in re.finditer(r"\bfun\s+([A-Z]\w*)\s*\(", s):
+            body = balanced(s, m.end() - 1)
+            if not body:
+                continue
+            opts = set()
+            for seg in body.split(","):
+                seg = seg.strip()
+                pm = re.match(
+                    r"(\w+)\s*:\s*\(+[^)]*\)\s*->\s*[\w?]+\s*\)?\s*\?\s*=\s*null", seg)
+                if pm:
+                    opts.add(pm.group(1))
+            if opts:
+                callback_funcs[m.group(1)] = opts
+
+    if not callback_funcs:
+        return issues
+
+    for p, src in files.items():
+        s = strip_comments_and_strings(src)
+        for name, opts in callback_funcs.items():
+            for m in re.finditer(r"\b" + name + r"\s*\(", s):
+                if s[max(0, m.start()-4):m.start()].rstrip().endswith("fun"):
+                    continue
+                named = top_level_args(balanced(s, m.end() - 1))
+                not_passed = opts - named
+                if not_passed:
+                    line = s[:m.start()].count("\n") + 1
+                    issues.append(
+                        "%s:%d  %s(...) 未传回调: %s —— UI 对应按钮点了会没反应"
+                        % (p, line, name, ", ".join(sorted(not_passed))))
     return issues
 
 
@@ -184,7 +242,11 @@ def main():
     if not files:
         print("未找到 .kt 文件"); return 1
     classes, funcs = parse_decls(files)
-    problems = check_braces(files) + check_named_args(files, classes, funcs) + check_imports(files)
+    problems = (check_braces(files)
+                + check_named_args(files, classes, funcs)
+                + check_imports(files)
+                + check_companion_nesting(files)
+                + check_optional_params(files, funcs))
     if not quiet:
         print("检查 %d 文件 | %d data class | %d fun" % (len(files), len(classes), len(funcs)))
     if problems:
