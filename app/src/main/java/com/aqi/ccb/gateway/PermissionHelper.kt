@@ -53,20 +53,32 @@ object PermissionHelper {
     fun checkAll(ctx: Context): List<PermState> {
         val list = mutableListOf<PermState>()
 
-        // 1) 悬浮窗 —— 双信号：API 判定 + 实际挂载成功记录
+        // 1) 悬浮窗 —— 以系统 API 为权威，历史成功挂载仅作为假阴性的旁证
+        //
+        // 修复前用 isMounted() 当第二信号：权限被撤销后，已 addView 的 View
+        // 不会立刻移除，isMounted() 仍 true —— 于是「权限已关」被误判成「已授予」。
+        // 现在只用「是否真的成功挂载过」这个持久化历史事实。
         val overlayApi = canDrawOverlays(ctx)
-        val overlayAttached = com.aqi.ccb.gateway.FloatingBall.lastAttachError == null &&
-            com.aqi.ccb.gateway.FloatingBall.isMounted()
-        val overlayGranted = overlayApi || overlayAttached
+        val overlayAttachedOnce = com.aqi.ccb.gateway.FloatingBall.everAttached(ctx)
+        val overlayGranted = overlayApi
+        val overlayStatus = when {
+            overlayApi -> PermStatus.GRANTED
+            overlayAttachedOnce -> PermStatus.UNKNOWN
+            else -> PermStatus.DENIED
+        }
         list.add(
             PermState(
                 key = KEY_OVERLAY,
                 title = "悬浮窗",
                 desc = "显示网关状态球与 MCP 状态球",
                 granted = overlayGranted,
-                impact = if (overlayGranted) "" else "悬浮球不会显示（当前被系统拒绝）",
-                status = if (overlayGranted) PermStatus.GRANTED else PermStatus.DENIED,
-                evidence = "api=" + overlayApi + " mounted=" + overlayAttached,
+                impact = when (overlayStatus) {
+                    PermStatus.GRANTED -> ""
+                    PermStatus.UNKNOWN -> "曾成功挂载过但系统现在报未授予，可能是权限被撤销"
+                    PermStatus.DENIED -> "悬浮球不会显示（当前被系统拒绝）"
+                },
+                status = overlayStatus,
+                evidence = "api=" + overlayApi + " everAttached=" + overlayAttachedOnce,
             )
         )
 
@@ -114,6 +126,13 @@ object PermissionHelper {
 
     // ---------------- 供 UI 读取的电池项三态 ----------------
 
+    /** 悬浮窗状态名：GRANTED / DENIED / UNKNOWN */
+    fun overlayStatusName(ctx: Context): String = when {
+        canDrawOverlays(ctx) -> PermStatus.GRANTED.name
+        com.aqi.ccb.gateway.FloatingBall.everAttached(ctx) -> PermStatus.UNKNOWN.name
+        else -> PermStatus.DENIED.name
+    }
+
     /** 电池项状态名：GRANTED / DENIED / UNKNOWN */
     fun batteryStatusName(ctx: Context): String {
         val api = isIgnoringBatteryOptimizations(ctx)
@@ -132,6 +151,20 @@ object PermissionHelper {
     }
 
     // ---------------- 用户是否已经去过该项设置页 ----------------
+
+    /**
+     * 上一次 openSettings 是否只是降级到了「应用详情页」。
+     * 详情页里没有悬浮窗/电池开关，对用户等于「点了没反应」——
+     * 调用方应根据此标记给出明确指引，而不是假装成功。
+     */
+    @Volatile
+    var lastOpenDegraded: Boolean = false
+        private set
+
+    /** 上一次 openSettings 实际打开的页面描述（供 Toast 提示） */
+    @Volatile
+    var lastOpenTarget: String = ""
+        private set
 
     private const val PREF = "perm_helper"
     private const val KEY_PREFIX = "opened_"
@@ -186,10 +219,34 @@ object PermissionHelper {
                 } else {
                     appDetailIntent(ctx)
                 }
-                KEY_BATTERY -> Intent(
-                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                    Uri.parse("package:" + ctx.packageName)
-                )
+                KEY_BATTERY -> {
+                    // 1) 首选标准 Intent（需要 Manifest 的 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS）
+                    try {
+                        ctx.startActivity(
+                            Intent(
+                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:" + ctx.packageName)
+                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        markPermissionOpened(ctx, key)
+                        lastOpenDegraded = false
+                        lastOpenTarget = "系统电池优化页"
+                        return true
+                    } catch (_: Exception) {
+                        // vivo / 部分 ROM 会拦截这个 Intent，落到厂商电池管理页
+                    }
+                    // 2) 厂商电池管理页
+                    if (openVendorBatteryPage(ctx)) {
+                        markPermissionOpened(ctx, key)
+                        lastOpenDegraded = false
+                        lastOpenTarget = "厂商电池管理页"
+                        return true
+                    }
+                    // 3) 兜底：应用详情页（这里没有电池开关，必须告知用户）
+                    lastOpenDegraded = true
+                    lastOpenTarget = "应用详情页（无电池开关）"
+                    appDetailIntent(ctx)
+                }
                 else -> appDetailIntent(ctx)
             }
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -200,6 +257,8 @@ object PermissionHelper {
         } catch (e: Exception) {
             GateLog.warn("perm", "openSettings($key) failed: ${e.message}")
             // 降级：打开应用详情页，用户可自行找到权限
+            lastOpenDegraded = true
+            lastOpenTarget = "应用详情页"
             return try {
                 ctx.startActivity(appDetailIntent(ctx))
                 true
@@ -207,6 +266,38 @@ object PermissionHelper {
                 false
             }
         }
+    }
+
+    /**
+     * 厂商电池管理页（vivo 的「后台高耗电」在这里）。
+     * 标准 ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 被拦截时用这个兜底。
+     */
+    private fun openVendorBatteryPage(ctx: Context): Boolean {
+        val candidates = listOf(
+            // vivo / iQOO：后台高耗电
+            "com.vivo.abe" to "com.vivo.applicationbehaviorengine.ui.ExcessivePowerManagerActivity",
+            "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager",
+            // 小米
+            "com.miui.powerkeeper" to "com.miui.powerkeeper.ui.HiddenAppsConfigActivity",
+            // OPPO
+            "com.coloros.oppoguardelf" to
+                "com.coloros.powermanager.fuelgaue.PowerUsageModelActivity",
+            // 华为
+            "com.huawei.systemmanager" to
+                "com.huawei.systemmanager.power.ui.HwPowerManagerActivity",
+        )
+        for ((pkg, cls) in candidates) {
+            try {
+                ctx.startActivity(
+                    Intent().setClassName(pkg, cls)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                GateLog.info("perm", "vendor battery page: " + pkg + "/" + cls)
+                return true
+            } catch (_: Exception) {
+            }
+        }
+        return false
     }
 
     private fun appDetailIntent(ctx: Context): Intent =
