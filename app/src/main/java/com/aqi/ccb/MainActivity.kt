@@ -133,6 +133,8 @@ class MainActivity : ComponentActivity() {
                     "settings" -> SettingsScreen(
                         state = settingsState.copy(
                             mcpRunning = mcpServer?.isRunning() == true,
+                            // 实际监听端口（来自 McpServer），与草稿分开，避免显示未生效值
+                            mcpPortApplied = mcpServer?.port?.toString() ?: "",
                             mcpCalls = mcpServer?.totalCalls ?: 0,
                             mcpErrors = mcpServer?.totalErrors ?: 0,
                             mcpLastMethod = mcpServer?.lastMethod ?: "",
@@ -163,8 +165,29 @@ class MainActivity : ComponentActivity() {
                             )
                         },
                         onMcpPort = { p ->
+                            // 关键修复：输入阶段只更新草稿，绝不重启 MCP。
+                            // 原实现每次击键都 setMcpPort，"3"/"38"/"380" 逐个 BindException，
+                            // 最后 MCP 停在半截端口，UI 却显示完整值 -> "连不上"
                             settingsState = settingsState.copy(mcpPort = p)
-                            setMcpPort(p.toIntOrNull() ?: 38081)
+                        },
+                        onMcpPortApply = {
+                            val target = settingsState.mcpPort.toIntOrNull() ?: 38081
+                            if (target < 1024 || target > 65535) {
+                                com.aqi.ccb.ui.UiToast.error("端口需在 1024-65535 之间")
+                            } else {
+                                setMcpPort(target)
+                                val srv = mcpServer
+                                settingsState = settingsState.copy(
+                                    mcpRunning = srv?.isRunning() == true,
+                                )
+                                if (srv?.isRunning() == true) {
+                                    com.aqi.ccb.ui.UiToast.show("MCP 已重启于 " + srv.port)
+                                } else {
+                                    com.aqi.ccb.ui.UiToast.error(
+                                        "MCP 启动失败：" + (srv?.lastError ?: "端口被占用")
+                                    )
+                                }
+                            }
                         },
                         onToastToggle = { v ->
                             settingsState = settingsState.copy(toastEnabled = v)
@@ -427,6 +450,15 @@ class MainActivity : ComponentActivity() {
         val srv = McpServer(port, mainState.port.toIntOrNull() ?: 38080) { McpBridge(this) }
         if (srv.start()) {
             mcpServer = srv
+            settingsState = settingsState.copy(mcpRunning = true, mcpLastError = null)
+            GateLog.info("mcp", "started on port " + srv.port)
+        } else {
+            mcpServer = srv
+            settingsState = settingsState.copy(
+                mcpRunning = false,
+                mcpLastError = srv.lastError,
+            )
+            GateLog.error("mcp", "start failed port=" + port + " err=" + srv.lastError)
         }
     }
 
