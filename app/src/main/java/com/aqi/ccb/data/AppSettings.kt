@@ -41,12 +41,18 @@ object AppSettings {
     /**
      * MCP 服务开关。
      *
-     * 默认值改为 true，与悬浮窗（默认 true）保持一致。
-     * 之前默认 false 导致首次启动「悬浮窗开着、MCP 关着」的割裂状态。
-     * MCP 仅监听 127.0.0.1，只有本机可访问，默认开启风险可控。
+     * 默认 **false**：MCP 默认不启动。
+     *
+     * 之前曾把默认值改成 true（想与悬浮窗默认值对齐），结果更糟：
+     * 首次启动时设置页开关显示「关」（settingsState 硬编码 false），
+     * 但 MCP 实际被拉起了，于是悬浮球如实显示 MA ——
+     * 三处各说各话，用户看到「开关关着但球显示 MA」。
+     *
+     * 现在统一为 false：开关关、服务不启动、球显示 MD，三者一致。
+     * 用户需要 MCP 时在设置里打开即可。
      */
     fun mcpEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_MCP_ENABLED, true)
+        prefs(context).getBoolean(KEY_MCP_ENABLED, false)
 
     fun setMcpEnabled(context: Context, v: Boolean) =
         prefs(context).edit().putBoolean(KEY_MCP_ENABLED, v).apply()
