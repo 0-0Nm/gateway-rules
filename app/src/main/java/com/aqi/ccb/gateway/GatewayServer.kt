@@ -154,8 +154,9 @@ class GatewayServer(
             totalRequests++
 
             if (!authorized(headers)) {
-                writeJson(output, 401, """{"error":{"message":"unauthorized","type":"auth"}}""")
-                totalFail++
+                fail(output, 401,
+                    """{"error":{"message":"unauthorized","type":"auth"}}""",
+                    "http_401 unauthorized")
                 return
             }
 
@@ -176,7 +177,9 @@ class GatewayServer(
                     handleChat(output, reqId, body)
                 }
                 else -> {
-                    writeJson(output, 404, """{"error":{"message":"path not found","type":"invalid_request"}}""")
+                    fail(output, 404,
+                        """{"error":{"message":"path not found","type":"invalid_request"}}""",
+                        "http_404 path not found: " + path)
                 }
             }
             GateLog.info("http", "done rid=$reqId ${System.currentTimeMillis() - t0}ms")
@@ -218,8 +221,9 @@ class GatewayServer(
 
         val rule = rules.firstOrNull { it.enabled }
         if (rule == null) {
-            writeJson(output, 503, """{"error":{"message":"no enabled rule","type":"no_rule"}}""")
-            totalFail++
+            fail(output, 503,
+                """{"error":{"message":"no enabled rule","type":"no_rule"}}""",
+                "no enabled rule")
             return
         }
 
@@ -241,22 +245,25 @@ class GatewayServer(
             targetModelId = modelId
         }
         if (cands.isEmpty()) {
-            writeJson(output, 404, """{"error":{"message":"no provider supports model '$modelId'","type":"no_model"}}""")
-            totalFail++
+            fail(output, 404,
+                """{"error":{"message":"no provider supports model '$modelId'","type":"no_model"}}""",
+                "model_not_found: " + modelId)
             return
         }
 
         cands = try {
             RuleEngine.applySelect(cands, ctx, rule.select)
         } catch (e: Exception) {
-            writeJson(output, 500, """{"error":{"message":"rule error: ${esc(e.message ?: "")}","type":"rule"}}""")
-            totalFail++
+            fail(output, 500,
+                """{"error":{"message":"rule error: ${esc(e.message ?: "")}","type":"rule"}}""",
+                "rule error: " + (e.message ?: ""))
             return
         }
 
         if (cands.isEmpty()) {
-            writeJson(output, 503, """{"error":{"message":"rule filtered out all providers","type":"no_candidate"}}""")
-            totalFail++
+            fail(output, 503,
+                """{"error":{"message":"rule filtered out all providers","type":"no_candidate"}}""",
+                "rule filtered all: no_candidate")
             return
         }
 
@@ -347,9 +354,10 @@ class GatewayServer(
             }
         }
 
+        val failReason = lastErr ?: "unknown"
         totalFail++
-        latestFailure = lastErr ?: "unknown"
-        latestFailureReason = classifyFailure(lastErr)
+        latestFailure = failReason
+        latestFailureReason = classifyFailure(failReason)
         GateLog.requestEnd(reqId, false, "-", 0.0, listOf("all_failed"))
         writeJson(output, 502, """{"error":{"message":"all providers failed: ${esc(lastErr ?: "")}","type":"upstream"}}""")
     }
@@ -447,6 +455,19 @@ class GatewayServer(
             remaining -= n
         }
         return out.toByteArray()
+    }
+
+    /**
+     * 统一失败出口：计数 + 记录原因 + 分类 + 写响应。
+     * 之前 6 处失败路径各写各的，诊断面板只看到其中一处，
+     * 导致"失败 1 次但原因空白"——这是真缺口。
+     */
+    private fun fail(output: OutputStream, code: Int, json: String, reason: String) {
+        totalFail++
+        latestFailure = reason
+        latestFailureReason = classifyFailure(reason)
+        GateLog.warn("gw", "fail code=" + code + " reason=" + reason)
+        writeJson(output, code, json)
     }
 
     private fun writeJson(output: OutputStream, code: Int, json: String) {
@@ -563,6 +584,12 @@ class GatewayServer(
         val e = (err ?: "").lowercase()
         return when {
             e.isEmpty() -> "未知"
+            e.contains("no enabled rule") -> "没有启用的规则"
+            e.contains("no_candidate") -> "规则把候选全过滤了"
+            e.contains("model_not_found") -> "模型不存在（检查模型名或 provider 配置）"
+            e.contains("rule error") -> "规则执行出错"
+            e.contains("unauthorized") -> "鉴权失败（本地 API Key 不匹配）"
+            e.contains("path not found") -> "路径错误（base_url 应带 /v1）"
             e.contains("rate_limited") || e.contains("soft_rest") -> "被限流，已进入休息"
             e.contains("connection refused") -> "连接被拒（上游端口不通）"
             e.contains("failed to connect") || e.contains("connectexception") -> "连不上上游（网络或域名）"
