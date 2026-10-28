@@ -109,29 +109,17 @@ class MainActivity : ComponentActivity() {
     //   开关显示「关」   <- 读这里的硬编码 false
     //   MCP 实际启动     <- startMcpIfEnabled() 读 AppSettings 的 true
     //   悬浮球显示 MA    <- 读 McpService.current.isRunning() 的真实值
-    // 用户看到「开关关着但球显示 MA」，以为球在乱报，
-    // 实际是球说了真话、开关在说谎。
+    // ⚠ 重要：字段初始化器运行在 Activity 构造函数阶段，
+    // 此时 attachBaseContext() 还没执行，this 作为 Context 是未绑定的，
+    // 任何 getSharedPreferences() 都会抛 NullPointerException。
+    // （曾经因此崩过一次：AppSettings.gatewayPort(this) 在 <init> 里被调用）
     //
-    // 现在全部从 AppSettings 读，三处永远同源。
-    private var settingsState by mutableStateOf(
-        com.aqi.ccb.ui.SettingsState(
-            gatewayPort = AppSettings.gatewayPort(this).toString(),
-            floatEnabled = AppSettings.floatEnabled(this),
-            mcpEnabled = AppSettings.mcpEnabled(this),
-            mcpPort = AppSettings.mcpPort(this).toString(),
-            toastEnabled = AppSettings.toastEnabled(this),
-            mcpRunning = false,
-        )
-    )
+    // 所以这里只能用无 Context 的默认值，真正配置在 onCreate 里由
+    // syncConfigToUi() 覆盖 —— 那时 this 已可用。
+    private var settingsState by mutableStateOf(com.aqi.ccb.ui.SettingsState())
 
     // ---- 聚合页状态 ----
-    // 端口初始值同样必须从 AppSettings 读。
-    // 原来 MainUiState() 用硬编码 "38080"，而 SettingsState.gatewayPort
-    // 已改成读 AppSettings —— 用户改过端口后重启，设置页显示新端口，
-    // 但 startGateway() 用 mainState.port 启动，会退回 38080 并失败。
-    private var mainState by mutableStateOf(
-        MainUiState(port = AppSettings.gatewayPort(this).toString())
-    )
+    private var mainState by mutableStateOf(MainUiState())
 
     // ---- 启动权限引导 ----
     /** 待处理的缺失权限 key 列表；非空时弹窗 */
@@ -176,6 +164,12 @@ class MainActivity : ComponentActivity() {
         // 绑定悬浮球的状态提供者：球上显示的 MCP / 网关状态
         // 一律实时向服务询问，不用缓存 —— 这修掉「MCP 没开却显示 MA」。
         com.aqi.ccb.gateway.FloatingBallState.bind()
+
+        // 立即把持久化配置灌进 UI 状态。
+        // 必须在 setContent 之前 —— 否则首次渲染用的是 data class 默认值
+        // （38080 / MCP 关闭），与真实配置不符，会闪一下再纠正。
+        // 此时 this 已作为 Context 绑定，可以安全读 SharedPreferences。
+        syncConfigToUi()
 
         setContent {
             AppTheme {
