@@ -93,13 +93,24 @@ object FloatingBall {
         performUnlock()
     }
 
-    fun attach(context: Context) {
-        if (mainView != null) return
+    /**
+     * 挂载双悬浮球。
+     * @return true=成功；false=失败（通常是没授予悬浮窗权限），调用方应引导用户授权。
+     */
+    fun attach(context: Context): Boolean {
+        if (mainView != null) return true
         val app = context.applicationContext
         appContext = app
         val prefs = app.getSharedPreferences(PREF, Context.MODE_PRIVATE)
         alphaPercent = prefs.getInt(KEY_ALPHA, 80).coerceIn(10, 100)
         locked = prefs.getBoolean(KEY_LOCKED, false)
+
+        // 前置检查：没权限就直接返回 false，不要等到 addView 抛异常
+        if (!PermissionHelper.canDrawOverlays(app)) {
+            GateLog.warn("float", "attach aborted: SYSTEM_ALERT_WINDOW not granted")
+            lastAttachError = "未授予悬浮窗权限"
+            return false
+        }
 
         val density = app.resources.displayMetrics.density
         gapX = prefs.getInt(KEY_GAP_X, (DEFAULT_GAP_X_DP * density).toInt())
@@ -149,10 +160,19 @@ object FloatingBall {
                 "attached main=${mp.x},${mp.y} sat=${sp.x},${sp.y} " +
                     "gap=${gapX},${gapY} alpha=$alphaPercent locked=$locked"
             )
+            lastAttachError = null
+            return true
         } catch (e: Exception) {
-            GateLog.warn("float", "attach failed: ${e.message}")
+            // 常见原因：appops 为 ignore（权限声明 granted 但实际被拒）
+            lastAttachError = e.message ?: e::class.java.simpleName
+            GateLog.error("float", "attach failed: " + lastAttachError, e)
+            return false
         }
     }
+
+    /** 最近一次 attach 失败原因；null 表示无错误 */
+    @Volatile var lastAttachError: String? = null
+        private set
 
     private fun baseParams(x: Int, y: Int) = WindowManager.LayoutParams(
         WindowManager.LayoutParams.WRAP_CONTENT,
