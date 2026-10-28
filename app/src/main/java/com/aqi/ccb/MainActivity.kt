@@ -264,6 +264,22 @@ class MainActivity : ComponentActivity() {
                         onStart = { startGateway() },
                         onStop = { stopGateway() },
                         onPortChange = { mainState = mainState.copy(port = it) },
+                        onCopyApiKey = {
+                            // 网关当前用 DemoFallback.LOCAL_AUTH；为空表示不鉴权
+                            val key = DemoFallback.LOCAL_AUTH
+                            if (key.isEmpty()) {
+                                com.aqi.ccb.ui.UiToast.show(
+                                    "网关未设访问密钥，客户端 API Key 可留空"
+                                )
+                            } else {
+                                val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                    as android.content.ClipboardManager
+                                cm.setPrimaryClip(
+                                    android.content.ClipData.newPlainText("apikey", key)
+                                )
+                                com.aqi.ccb.ui.UiToast.show("已复制 API Key")
+                            }
+                        },
                         onFloatAlpha = { pct ->
                             com.aqi.ccb.gateway.FloatingBall.setAlphaPercent(pct)
                             mainState = mainState.copy(floatAlpha = pct)
@@ -368,8 +384,23 @@ class MainActivity : ComponentActivity() {
         }
 
         val s = server
+        // 诊断数据：直接把 GatewayServer 的运行时指标搬进 UI 状态
+        val diagPath = s?.pathDiagnosisPublic() ?: "未启动"
+        val diagLan = s?.lanHintPublic() ?: ""
         mainState = mainState.copy(
             virtualModels = vmRows,
+            diagPath = diagPath,
+            diagBind = s?.actualBind ?: "",
+            diagAcceptAlive = s?.acceptAlivePublic() == true,
+            diagTcpConns = s?.tcpConnectionsPublic() ?: 0,
+            diagDisconnects = s?.clientDisconnects ?: 0,
+            diagWorkers = s?.workerCountPublic() ?: 0,
+            diagQueued = s?.queuedCountPublic() ?: 0,
+            diagUptimeSec = s?.uptimeSecPublic() ?: 0,
+            diagLatestRoute = s?.latestRoute ?: "",
+            diagLatestFailure = s?.latestFailure ?: "",
+            diagFailureReason = s?.latestFailureReason ?: "",
+            diagLanHint = diagLan,
             floatAlpha = com.aqi.ccb.gateway.FloatingBall.alphaPercent(),
             floatLocked = com.aqi.ccb.gateway.FloatingBall.isLocked(),
             running = s?.isRunning() == true,
