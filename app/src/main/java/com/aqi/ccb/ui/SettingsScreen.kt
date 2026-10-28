@@ -69,6 +69,13 @@ data class SettingsState(
     val permBatteryEvidence: String = "",
     /** 悬浮球最近一次挂载失败原因 */
     val floatError: String? = null,
+    /**
+     * 自启动状态：DENIED（未前往）/ UNKNOWN（已前往，系统无法确认真实状态）
+     * Android 无标准 API 可查询自启动白名单，故只做"是否前往过"的推断。
+     */
+    val permAutostartStatus: String = "DENIED",
+    /** 用户是否曾前往自启动设置页 */
+    val permAutostartVisited: Boolean = false,
 ) {
     /** 地址用实际生效端口，避免显示未应用的草稿值 */
     val mcpUrl: String
