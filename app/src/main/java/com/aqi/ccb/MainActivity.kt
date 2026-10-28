@@ -34,6 +34,7 @@ import com.aqi.ccb.gateway.BatchTester
 import com.aqi.ccb.gateway.McpServer
 import com.aqi.ccb.gateway.McpService
 import com.aqi.ccb.data.AppSettings
+import com.aqi.ccb.data.DemoFallback
 import com.aqi.ccb.data.McpBridge
 import com.aqi.ccb.data.ModelInfo
 import com.aqi.ccb.gateway.RateLimiter
@@ -126,6 +127,12 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             AppTheme {
+                // UI 样式（圆角/透明度）由 MCP 的 gw_set_ui_style 可实时修改；
+                // 这里读一次并随重组生效，改完无需重启
+                val uiStyle = com.aqi.ccb.ui.UiStyle.load(this)
+                androidx.compose.runtime.CompositionLocalProvider(
+                    com.aqi.ccb.ui.LocalUiStyle provides uiStyle
+                ) {
                 when (route) {
                     "provider" -> ProviderEditScreen(
                         draft = providerDraft,
@@ -305,6 +312,7 @@ class MainActivity : ComponentActivity() {
                         onEditVirtual = { name -> openVirtualModel(name) },
                     )
                 }
+                }   // 关闭 CompositionLocalProvider
             }
         }
 
