@@ -91,16 +91,29 @@ data class VirtualModel(
  */
 object VirtualModelResolver {
 
-    /** 返回该虚拟名的候选；非虚拟名返回 null（走普通路由） */
+    /**
+     * 返回该虚拟名的候选；非虚拟名返回 null（走普通路由）。
+     *
+     * 修复：原来用 `cands.sortedBy { it.why.lastOrNull() }` 排序，
+     * 而 why.last() 是 "prio=10" 这种字符串——字符串序下
+     * "prio=10" < "prio=2"，导致第 10 个成员排到第 2 个前面。
+     * 现在按 priority 数值升序。
+     */
     fun resolve(name: String, virtuals: List<VirtualModel>, providers: List<Provider>): List<Cand>? {
         val vm = virtuals.firstOrNull { it.enabled && it.name == name } ?: return null
-        val cands = mutableListOf<Cand>()
+        val ordered = mutableListOf<Pair<Int, Cand>>()
         for (m in vm.members) {
             val p = providers.firstOrNull { it.id == m.providerId && it.enabled } ?: continue
             val model = p.models[m.modelId] ?: continue
-            cands.add(Cand(p, model, mutableListOf("vmodel=${vm.name}", "prio=${m.priority}")))
+            ordered.add(
+                m.priority to Cand(
+                    p, model,
+                    mutableListOf("vmodel=" + vm.name, "prio=" + m.priority)
+                )
+            )
         }
-        return if (cands.isEmpty()) null else cands.sortedBy { it.why.lastOrNull() ?: "" }
+        if (ordered.isEmpty()) return null
+        return ordered.sortedBy { it.first }.map { it.second }
     }
 
     /** 聚合页展示：所有虚拟模型 + 每个 member 的可解析性 */
