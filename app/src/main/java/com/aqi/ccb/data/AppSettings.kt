@@ -212,6 +212,33 @@ class McpBridge(private val context: Context) : McpConfig {
         })
     }.toString(2)
 
+    override fun getUiStyleJson(): String =
+        com.aqi.ccb.ui.UiStyle.load(context).toJson().toString(2)
+
+    override fun setUiStyle(patchJson: String): String {
+        return try {
+            val patch = JSONObject(patchJson)
+            // 白名单：只接受已知字段，防止任意键污染
+            val allowed = setOf(
+                "baseRadius", "minRadius", "bottomEndRadius", "shrinkStep",
+                "shrinkAfterLines", "dynamicRadius", "cardAlpha", "innerCornerEnabled"
+            )
+            val clean = JSONObject()
+            patch.keys().forEach { k ->
+                if (k in allowed) clean.put(k, patch.get(k))
+            }
+            if (clean.length() == 0) {
+                val list = allowed.joinToString(",") { "\"" + it + "\"" }
+                return """{"ok":false,"error":"无有效字段","allowed":[$list]}"""
+            }
+            val next = com.aqi.ccb.ui.UiStyle.patch(context, clean)
+            GateLog.info("ui", "style patched by MCP: " + clean)
+            next.toJson().toString(2)
+        } catch (e: Exception) {
+            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+        }
+    }
+
     override fun readLog(lines: Int): String = try {
         val f = File(context.filesDir, "logs/system/gateway.log")
         if (!f.exists()) """{"log":"(empty)"}"""
