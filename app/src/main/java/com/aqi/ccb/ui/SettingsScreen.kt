@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -54,8 +55,19 @@ data class SettingsState(
     val mcpLastLatencyMs: Long = 0,
     val mcpLastResult: String = "",
     val mcpLastError: String? = null,
+    /** 实际监听中的端口（与 mcpPort 草稿可能不同，未点「应用」前不等） */
+    val mcpPortApplied: String = "",
 ) {
-    val mcpUrl: String get() = "http://127.0.0.1:$mcpPort/mcp"
+    /** 地址用实际生效端口，避免显示未应用的草稿值 */
+    val mcpUrl: String
+        get() {
+            val p = if (mcpPortApplied.isNotEmpty()) mcpPortApplied else mcpPort
+            return "http://127.0.0.1:$p/mcp"
+        }
+
+    /** 草稿与生效值是否不一致（UI 提示"未应用"） */
+    val mcpPortDirty: Boolean
+        get() = mcpPortApplied.isNotEmpty() && mcpPort != mcpPortApplied
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -69,6 +81,7 @@ fun SettingsScreen(
     onToastToggle: (Boolean) -> Unit,
     onBack: () -> Unit = {},
     onMcpCopyRaw: (() -> Unit)? = null,
+    onMcpPortApply: (() -> Unit)? = null,
 ) {
     Scaffold(
         topBar = {
@@ -127,25 +140,51 @@ fun SettingsScreen(
                     supportingContent = {
                         Text(
                             if (state.mcpEnabled && state.mcpRunning)
-                                "运行中 · http://127.0.0.1:${state.mcpPort}/mcp"
+                                "运行中 · ${state.mcpUrl}"
                             else if (state.mcpEnabled)
                                 "已启用但未启动（网关启动后自动拉起）"
                             else "关闭状态"
                         )
                     },
                 )
-                formItem(headlineContent = { Text("MCP 端口") }) {
-                    OutlinedTextField(
-                        value = state.mcpPort,
-                        onValueChange = { onMcpPort(it.filter { c -> c.isDigit() }.take(5)) },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFont),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        supportingText = {
-                            Text("默认 38081，与网关端口分开。改动后 MCP 会重启")
-                        },
-                    )
+                formItem(
+                    headlineContent = { Text("MCP 端口") },
+                    supportingContent = {
+                        Text(
+                            if (state.mcpPortDirty)
+                                "未应用：当前实际监听 ${state.mcpPortApplied}，输入的是 ${state.mcpPort}"
+                            else if (state.mcpPortApplied.isNotEmpty())
+                                "当前监听 ${state.mcpPortApplied}"
+                            else "默认 38081"
+                        )
+                    },
+                ) {
+                    Column {
+                        OutlinedTextField(
+                            value = state.mcpPort,
+                            // 关键修复：只更新草稿，不触发重启。
+                            // 之前每击键都调 setMcpPort -> 每个中间值都 stop/start，
+                            // 导致 "3"->"38"->"380" 全部 BindException，最后停在半截端口。
+                            onValueChange = { onMcpPort(it.filter { c -> c.isDigit() }.take(5)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            isError = state.mcpPortDirty,
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFont),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { onMcpPortApply?.invoke() },
+                                enabled = state.mcpPortDirty || state.mcpPortApplied.isEmpty(),
+                            ) { Text("应用并重启") }
+                            if (state.mcpPortDirty) {
+                                OutlinedButton(onClick = {
+                                    onMcpPort(state.mcpPortApplied)
+                                }) { Text("撤销") }
+                            }
+                        }
+                    }
                 }
                 // ---- 状态检测 ----
                 item(
