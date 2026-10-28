@@ -68,6 +68,40 @@ object FloatingBall {
 
     @Volatile private var currentState: String = STATE_IDLE
     @Volatile private var mcpAlive: Boolean = false
+
+    // ---- 外部状态提供者（唯一真源）----
+    //
+    // 为什么需要这个：
+    //   原来 FloatingBall 用 @Volatile 字段缓存「网关状态」和「MCP 状态」，
+    //   由各处调用 setState()/setMcpAlive() 推送。问题有两个：
+    //     1 detach() 不清缓存 -> 重新 attach 时用旧值建视图
+    //        （表现为「MCP 没开却显示 MA」）
+    //     2 推送源分散，任何时候都可能有人推错值，没有以实际状态为准
+    //   改成「提供者」模式后：视图要显示时**实时问**，不依赖推送时序。
+    @Volatile private var mcpAliveProvider: (() -> Boolean)? = null
+    @Volatile private var gatewayStateProvider: (() -> String)? = null
+
+    /**
+     * 绑定状态提供者。应在 Application/Service 初始化时调用一次。
+     * 提供者必须返回**实时真值**（如 McpService.current?.isRunning()），
+     * 而不是另一个缓存字段。
+     */
+    fun bindStateProviders(
+        mcpAlive: () -> Boolean,
+        gatewayState: () -> String,
+    ) {
+        mcpAliveProvider = mcpAlive
+        gatewayStateProvider = gatewayState
+        GateLog.info("float", "state providers bound")
+    }
+
+    /** 实时读取 MCP 存活；无 provider 时才退回缓存值 */
+    private fun isMcpAliveNow(): Boolean =
+        mcpAliveProvider?.invoke() ?: mcpAlive
+
+    /** 实时读取网关状态；无 provider 时才退回缓存值 */
+    private fun gatewayStateNow(): String =
+        gatewayStateProvider?.invoke() ?: currentState
     @Volatile private var currentMcpLabel: String = MCP_DIED
     @Volatile private var locked: Boolean = false
     private var alphaPercent: Int = 80
@@ -122,10 +156,13 @@ object FloatingBall {
             val w = app.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
             // ---- 主球：网关状态 ----
+            // 建视图前先问真值，不用缓存（否则 detach/attach 后会显示旧状态）
+            val gwStateNow = gatewayStateNow()
+            currentState = gwStateNow
             val mv = TextView(app).apply {
                 text = label()
                 textSize = 11f
-                setTextColor(colorFor(currentState))
+                setTextColor(colorFor(gwStateNow))
                 setPadding(24, 16, 24, 16)
                 alpha = alphaPercent / 100f
             }
@@ -136,6 +173,11 @@ object FloatingBall {
             w.addView(mv, mp)
 
             // ---- 卫星球：MCP 状态 ----
+            // 关键修复：原来直接用缓存的 mcpAlive 建视图，
+            // MCP 实际没开也会显示 MA。现在先问真值。
+            val mcpNow = isMcpAliveNow()
+            mcpAlive = mcpNow
+            currentMcpLabel = if (mcpNow) MCP_ALIVE else MCP_DIED
             val sv = TextView(app).apply {
                 text = mcpLabel()
                 textSize = 10f
@@ -380,7 +422,12 @@ object FloatingBall {
         wm = null
         mainParams = null
         satParams = null
-        GateLog.info("float", "detached")
+        // 清缓存：防止下次 attach 用旧值建视图
+        // （这正是「MCP 没开却显示 MA」的根因）
+        mcpAlive = false
+        currentMcpLabel = MCP_DIED
+        currentState = STATE_IDLE
+        GateLog.info("float", "detached (state cache cleared)")
     }
 
     // ---------------- 看门狗 ----------------
@@ -430,7 +477,12 @@ object FloatingBall {
         val hasRef = mainView != null
         val windowAlive = if (hasRef) isViewAttached(mainView) else false
 
-        if (hasRef && windowAlive) return   // 状态正常
+        if (hasRef && windowAlive) {
+            // 窗口正常，但仍要核对状态文字是否落后于真值：
+            // 某次 setMcpAlive/setState 推送丢失会导致球上显示旧状态。
+            refreshFromProviders()
+            return
+        }
 
         if (hasRef && !windowAlive) {
             GateLog.warn("float", "watchdog: view ref exists but window gone -> rebuild")
@@ -487,11 +539,34 @@ object FloatingBall {
         }
     }
 
-    fun isMcpAlive(): Boolean = mcpAlive
+    fun isMcpAlive(): Boolean = isMcpAliveNow()
 
-    private fun label(): String = "● " + currentState
+    /**
+     * 从提供者拉取最新状态并重绘两球。
+     * 供看门狗周期调用，也供 Activity onResume 调用。
+     * 这样即使某次推送丢失，也会在一个周期内自愈。
+     */
+    fun refreshFromProviders() {
+        main.post {
+            val m = isMcpAliveNow()
+            val g = gatewayStateNow()
+            mcpAlive = m
+            currentMcpLabel = if (m) MCP_ALIVE else MCP_DIED
+            currentState = g
+            satView?.let { v ->
+                v.text = currentMcpLabel
+                if (!locked) v.setTextColor(mcpColor())
+            }
+            mainView?.let { v ->
+                v.text = label()
+                if (!locked) v.setTextColor(colorFor(g))
+            }
+        }
+    }
 
-    private fun mcpLabel(): String = if (mcpAlive) MCP_ALIVE else MCP_DIED
+    private fun label(): String = "● " + gatewayStateNow()
+
+    private fun mcpLabel(): String = if (isMcpAliveNow()) MCP_ALIVE else MCP_DIED
 
     private fun applyBorder(v: TextView) {
         if (locked) {
@@ -508,5 +583,46 @@ object FloatingBall {
     }
 
     private fun mcpColor(): Int =
-        if (mcpAlive) 0xFF4CAF50.toInt() else 0xFFF44336.toInt()
+        if (isMcpAliveNow()) 0xFF4CAF50.toInt() else 0xFFF44336.toInt()
+}
+
+/**
+ * 悬浮球状态的真值来源。
+ *
+ * 为什么单独抽出来：
+ *   Activity 和两个前台服务都需要绑定悬浮球的状态提供者
+ *   （Activity 销毁后球还在，必须由服务继续喂正确状态）。
+ *   统一放这里，避免各处各写一套判据。
+ *
+ * 判据一律读服务单例的**实时状态**，不读任何缓存字段。
+ */
+object FloatingBallState {
+
+    /** MCP 是否存活：看真实 server 实例，不看静态 running 标志 */
+    fun mcpAlive(): Boolean = McpService.current?.isRunning() == true
+
+    /**
+     * 网关状态：
+     *   未运行            -> 待命
+     *   运行且有处理中请求 -> 生成
+     *   运行但空闲        -> 待命
+     *
+     * 不再使用「中断」——原代码定义了 STATE_ERROR 但从未有任何地方设置，
+     * 等于死状态。要恢复它需要真正的失败计数窗口，属于后续工作，
+     * 先不谎报。
+     */
+    fun gatewayState(): String {
+        val gw = GatewayService.current ?: return FloatingBall.STATE_IDLE
+        if (!gw.isRunning()) return FloatingBall.STATE_IDLE
+        return if (gw.inflightPublic() > 0) FloatingBall.STATE_RUNNING
+        else FloatingBall.STATE_IDLE
+    }
+
+    /** 给 Activity / Service 共用的一键绑定 */
+    fun bind() {
+        FloatingBall.bindStateProviders(
+            mcpAlive = { mcpAlive() },
+            gatewayState = { gatewayState() },
+        )
+    }
 }
