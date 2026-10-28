@@ -59,6 +59,8 @@ data class SettingsState(
     val mcpPortApplied: String = "",
     // ---- 权限状态 ----
     val permOverlay: Boolean = false,
+    /** 悬浮窗精确状态：GRANTED / DENIED / UNKNOWN */
+    val permOverlayStatus: String = "DENIED",
     val permNotification: Boolean = false,
     val permBattery: Boolean = false,
     /** 电池项精确状态：GRANTED / DENIED / UNKNOWN（vivo 等 ROM 判定不可靠时为 UNKNOWN） */
@@ -324,16 +326,28 @@ fun SettingsScreen(
                     onClick = { onOpenPerm?.invoke("overlay") },
                     headlineContent = { Text("悬浮窗") },
                     supportingContent = {
+                        val unknown = state.permOverlayStatus == "UNKNOWN"
                         Text(
-                            if (state.permOverlay) "已授予"
-                            else "未授予 · 点击去开启（悬浮球必需）",
-                            color = if (state.permOverlay)
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            else MaterialTheme.colorScheme.error
+                            when {
+                                state.permOverlay -> "已授予"
+                                unknown -> "曾成功挂载过，但系统现在报未授予（可能已被撤销），请点右侧确认"
+                                else -> "未授予 · 点击去开启（悬浮球必需）"
+                            },
+                            color = when {
+                                state.permOverlay -> MaterialTheme.colorScheme.onSurfaceVariant
+                                unknown -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.error
+                            }
                         )
                     },
                     trailingContent = {
-                        Text(if (state.permOverlay) "✓" else "去开启")
+                        Text(
+                            when {
+                                state.permOverlay -> "✓"
+                                state.permOverlayStatus == "UNKNOWN" -> "待确认"
+                                else -> "去开启"
+                            }
+                        )
                     },
                 )
 
