@@ -148,6 +148,16 @@ class McpService : Service() {
             notifyState(false, "", 0)
             GateLog.error("mcp", "service failed to bind $port")
         }
+
+        // 悬浮球自愈：进程被杀后系统以 START_STICKY 重启本服务，
+        // 但 Activity 不会自动重建，球若只在 Activity 里挂就永远回不来。
+        // 这里由服务接管挂载（ensureAttached 幂等，已挂则不重复操作）。
+        runCatching {
+            if (FloatingBall.ensureAttached(this)) {
+                FloatingBall.setMcpAlive(ok)
+            }
+        }.onFailure { GateLog.warn("float", "service ensureAttached failed: ${it.message}") }
+
         return START_STICKY
     }
 
