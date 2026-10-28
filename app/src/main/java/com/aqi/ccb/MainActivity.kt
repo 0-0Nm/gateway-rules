@@ -29,6 +29,7 @@ import com.aqi.ccb.gateway.ConfigStore
 import com.aqi.ccb.gateway.GateLog
 import com.aqi.ccb.gateway.FloatingBall
 import com.aqi.ccb.gateway.GatewayServer
+import com.aqi.ccb.gateway.GatewayService
 import com.aqi.ccb.gateway.ModelProbe
 import com.aqi.ccb.gateway.BatchTester
 import com.aqi.ccb.gateway.McpServer
