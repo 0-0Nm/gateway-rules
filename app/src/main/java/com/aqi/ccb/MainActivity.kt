@@ -125,7 +125,13 @@ class MainActivity : ComponentActivity() {
     )
 
     // ---- 聚合页状态 ----
-    private var mainState by mutableStateOf(MainUiState())
+    // 端口初始值同样必须从 AppSettings 读。
+    // 原来 MainUiState() 用硬编码 "38080"，而 SettingsState.gatewayPort
+    // 已改成读 AppSettings —— 用户改过端口后重启，设置页显示新端口，
+    // 但 startGateway() 用 mainState.port 启动，会退回 38080 并失败。
+    private var mainState by mutableStateOf(
+        MainUiState(port = AppSettings.gatewayPort(this).toString())
+    )
 
     // ---- 启动权限引导 ----
     /** 待处理的缺失权限 key 列表；非空时弹窗 */
@@ -657,7 +663,52 @@ class MainActivity : ComponentActivity() {
 
     // ==================== 刷新聚合页 ====================
 
+    /**
+     * 把持久化配置回灌到 UI 状态，保证「设置页 / 主界面 / 服务」三处同源。
+     *
+     * 为什么需要：之前两处 UI 状态各自持有 port / 开关值，
+     * 任何一处被外部改动（MCP 工具、服务重启、用户操作）都不会自动传播，
+     * 表现为「这个页面显示 A，那个页面显示 B」。
+     * 统一在每轮 refresh 时从 AppSettings 回灌。
+     */
+    private fun syncConfigToUi() {
+        val gwPort = AppSettings.gatewayPort(this).toString()
+        val mcpPort = AppSettings.mcpPort(this).toString()
+        val floatOn = AppSettings.floatEnabled(this)
+        val mcpOn = AppSettings.mcpEnabled(this)
+        val toastOn = AppSettings.toastEnabled(this)
+
+        // 主界面端口：
+        //   未运行 -> 显示配置值（准备启动用）
+        //   已运行 -> 显示实际监听端口（以服务为准，避免显示与实监听不符）
+        val runningPort = server?.port?.toString()
+        val shownPort = if (server?.isRunning() == true && runningPort != null) {
+            runningPort
+        } else gwPort
+        if (mainState.port != shownPort) {
+            mainState = mainState.copy(port = shownPort)
+        }
+        // 设置页：仅在草稿未编辑时同步（有未应用改动就别覆盖用户输入）
+        // 加变化判断：refreshMain 每秒被 ticker 调用，无变化时不必重建对象
+        val wantMcpPort = if (settingsState.mcpPortDirty) settingsState.mcpPort else mcpPort
+        if (settingsState.gatewayPort != gwPort ||
+            settingsState.floatEnabled != floatOn ||
+            settingsState.mcpEnabled != mcpOn ||
+            settingsState.toastEnabled != toastOn ||
+            settingsState.mcpPort != wantMcpPort
+        ) {
+            settingsState = settingsState.copy(
+                gatewayPort = gwPort,
+                floatEnabled = floatOn,
+                mcpEnabled = mcpOn,
+                toastEnabled = toastOn,
+                mcpPort = wantMcpPort,
+            )
+        }
+    }
+
     private fun refreshMain() {
+        syncConfigToUi()
         val drafts = ProviderRepo.list(this)
         val ruleJsons = ConfigStore.loadRules(this)
 
