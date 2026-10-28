@@ -176,6 +176,14 @@ class GatewayService : Service() {
             notifyState(false, 0, srv.lastError)
             GateLog.error("gw", "service failed to bind " + port)
         }
+
+        // 悬浮球自愈（与 McpService 双保险，谁先启动谁挂，ensureAttached 幂等）
+        runCatching {
+            if (FloatingBall.ensureAttached(this)) {
+                FloatingBall.setMcpAlive(McpService.running)
+            }
+        }.onFailure { GateLog.warn("float", "gw ensureAttached failed: ${it.message}") }
+
         return START_STICKY
     }
 
