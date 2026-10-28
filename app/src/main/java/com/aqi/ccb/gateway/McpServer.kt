@@ -162,15 +162,21 @@ class McpServer(
             lastMethod = rpcMethod
             val resp = handleRpc(reqStr)
             lastLatencyMs = System.currentTimeMillis() - m0
-            val isErr = resp.contains("\"error\"")
-            lastResult = if (isErr) "error" else "ok"
-            if (isErr) totalErrors++
-            GateLog.info(
-                "mcp", "rpc " + rpcMethod + " -> " + lastResult +
-                    " " + lastLatencyMs + "ms from=" + lastClient +
-                    " bytes=" + body.size
-            )
-            writeJson(output, 200, resp)
+            if (resp == null) {
+                // 通知：202 Accepted，空响应体
+                lastResult = "notification"
+                writeEmpty(output, 202)
+            } else {
+                val isErr = resp.contains("\"error\"")
+                lastResult = if (isErr) "error" else "ok"
+                if (isErr) totalErrors++
+                GateLog.info(
+                    "mcp", "rpc " + rpcMethod + " -> " + lastResult +
+                        " " + lastLatencyMs + "ms from=" + lastClient +
+                        " bytes=" + body.size
+                )
+                writeJson(output, 200, resp)
+            }
         } catch (e: Exception) {
             GateLog.error("mcp", "handle error", e)
         } finally {
@@ -179,7 +185,8 @@ class McpServer(
     }
 
     // ==================== JSON-RPC ====================
-    private fun handleRpc(reqStr: String): String {
+    /** 返回 null 表示这是 JSON-RPC 通知，不得回包（HTTP 202 空体） */
+    private fun handleRpc(reqStr: String): String? {
         val id: Any? = try {
             val o = JSONObject(reqStr)
             o.opt("id")
@@ -190,6 +197,12 @@ class McpServer(
             val req = JSONObject(reqStr)
             val method = req.optString("method")
             val params = req.optJSONObject("params") ?: JSONObject()
+
+            // STRX 同款：没有 id 即通知，不返回任何响应体
+            if (!req.has("id")) {
+                GateLog.info("mcp", "notification " + method + " -> 202 (no body)")
+                return null
+            }
 
             when (method) {
                 "initialize" -> rpcOk(id, initializeResult())
@@ -368,6 +381,15 @@ class McpServer(
 
     private fun writeJson(output: OutputStream, code: Int, json: String) {
         writeResp(output, code, json)
+    }
+
+    /** 202 / 204 这类无体响应 */
+    private fun writeEmpty(output: OutputStream, code: Int) {
+        val head = "HTTP/1.1 " + code + " Accepted\r\n" +
+            "Content-Length: 0\r\n" +
+            "Connection: close\r\n\r\n"
+        output.write(head.toByteArray(Charsets.UTF_8))
+        output.flush()
     }
 
     private fun writeResp(output: OutputStream, code: Int, body: String) {
