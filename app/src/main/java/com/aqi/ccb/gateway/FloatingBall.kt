@@ -174,6 +174,33 @@ object FloatingBall {
     @Volatile var lastAttachError: String? = null
         private set
 
+    /**
+     * 幂等挂载入口 —— 供 Service 在进程重启后自愈挂载。
+     *
+     * 为什么需要这个：
+     *   原来 attach 只被 MainActivity 调用。两个前台服务都是 START_STICKY，
+     *   进程被杀后系统会重启服务，但服务里没有任何代码重新挂球，
+     *   于是「球跟 Activity 一起死，进程重启也不回来」。
+     *
+     * 行为：
+     *   - 用户关了悬浮窗开关 -> 确保不残留，返回 false
+     *   - 已挂载 -> 直接返回 true（不改状态，避免闪烁）
+     *   - 未挂载 -> 走完整 attach（含权限检查）
+     *
+     * 注意：内部全部使用 applicationContext，Service 传 this 也不会泄漏。
+     */
+    fun ensureAttached(context: Context): Boolean {
+        val app = context.applicationContext
+        if (!com.aqi.ccb.data.AppSettings.floatEnabled(app)) {
+            if (mainView != null) detach()
+            return false
+        }
+        if (mainView != null) return true
+        GateLog.info("float", "ensureAttached: not mounted, attaching (caller=" +
+            context.javaClass.simpleName + ")")
+        return attach(app)
+    }
+
     private fun baseParams(x: Int, y: Int) = WindowManager.LayoutParams(
         WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.WRAP_CONTENT,
