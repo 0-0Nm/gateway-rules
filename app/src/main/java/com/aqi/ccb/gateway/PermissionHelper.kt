@@ -128,6 +128,29 @@ object PermissionHelper {
         return list
     }
 
+    // ---------------- 自启动状态（无法真检测，只能推断） ----------------
+
+    /**
+     * 自启动状态名。
+     *
+     * 为什么只能推断：Android 没有任何标准 API 能查询
+     * "本应用是否被加入厂商自启动白名单"。各 ROM 的实现都是私有的，
+     * 连读取都需要系统签名。
+     *
+     * 所以采用「访问记录 + 实测冻结情况」推断：
+     *   - 用户没去过设置页          -> DENIED  （明确提示必须去）
+     *   - 用户去过设置页            -> UNKNOWN （提示"已前往，若仍被冻结请再确认"）
+     *
+     * 不谎报 GRANTED —— 因为我们确实无法确认。
+     */
+    fun autostartStatusName(ctx: Context): String =
+        if (wasPermissionOpened(ctx, KEY_AUTOSTART)) PermStatus.UNKNOWN.name
+        else PermStatus.DENIED.name
+
+    /** 用户是否曾前往自启动设置页 */
+    fun autostartVisited(ctx: Context): Boolean =
+        wasPermissionOpened(ctx, KEY_AUTOSTART)
+
     // ---------------- 供 UI 读取的电池项三态 ----------------
 
     /** 悬浮窗状态名：GRANTED / DENIED / UNKNOWN */
@@ -381,6 +404,7 @@ object PermissionHelper {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 ctx.startActivity(i)
+                markPermissionOpened(ctx, KEY_AUTOSTART)
                 GateLog.info("perm", "autoStart opened: $pkg/$cls")
                 return true
             } catch (_: Exception) {
@@ -407,6 +431,8 @@ object PermissionHelper {
     }
 
     const val KEY_OVERLAY = "overlay"
+    /** 自启动 / 后台运行管理。Android 无标准 API 可查询真实状态，只能用访问记录推断 */
+    const val KEY_AUTOSTART = "autostart"
     const val KEY_NOTIFICATION = "notification"
     const val KEY_BATTERY = "battery"
 }
