@@ -830,7 +830,7 @@ class MainActivity : ComponentActivity() {
             put("switchGranularity", d.switchGranularity)
         }
         ProviderRepo.saveRule(this, rule)
-        ProviderRepo.syncRateLimit(this, JSONObject().apply {
+        val rateSync = ProviderRepo.syncRateLimit(this, JSONObject().apply {
             put("ratePerMin", d.ratePerMin.toIntOrNull() ?: 30)
             put("burst", d.burst.toIntOrNull() ?: 3)
             put("minIntervalMs", d.minIntervalMs.toIntOrNull() ?: 800)
@@ -840,6 +840,12 @@ class MainActivity : ComponentActivity() {
         editingRuleId = null
         ruleDraft = RuleDraft()
         route = "main"
+        // 限流只填充未配置者，告知用户实际影响范围
+        if (rateSync.first > 0 || rateSync.second > 0) {
+            com.aqi.ccb.ui.UiToast.show(
+                "限流：填充 ${rateSync.first} 个，保留 ${rateSync.second} 个已有配置"
+            )
+        }
         refreshMain()
         server?.let { srv ->
             srv.update(ProviderRepo.runtimeProviders(this), ProviderRepo.runtimeRules(this))
