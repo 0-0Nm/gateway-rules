@@ -118,6 +118,8 @@ class GatewayServer(
     fun acceptAlivePublic(): Boolean = acceptThread?.isAlive == true
     fun tcpConnectionsPublic(): Int = tcpConnections.get()
     fun workerCountPublic(): Int = pool.activeCount
+    /** 处理中请求数（供悬浮球判断「生成中」） */
+    fun inflightPublic(): Int = inflight.get()
     fun queuedCountPublic(): Int = pool.queue?.size ?: 0
     fun uptimeSecPublic(): Long =
         if (startedAtMs > 0) (System.currentTimeMillis() - startedAtMs) / 1000 else 0
