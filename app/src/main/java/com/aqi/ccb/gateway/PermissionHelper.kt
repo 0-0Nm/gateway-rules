@@ -29,7 +29,17 @@ object PermissionHelper {
      * 仍返回 false。用二态布尔会把"已授予"误报成"未授予"，用户看到就是
      * "我明明开了它说没开"。
      */
-    enum class PermStatus { GRANTED, DENIED, UNKNOWN }
+    enum class PermStatus {
+        GRANTED,
+        DENIED,
+        UNKNOWN,
+        /**
+         * 系统报未授予，但实测功能正常（如 vivo 自有白名单放行悬浮窗）。
+         * 不能谎报 GRANTED —— 系统确实没开；也不能报 DENIED —— 实际能用。
+         * UI 必须把这对矛盾同时呈现给用户。
+         */
+        CONFLICT
+    }
 
     /** 单项权限状态 */
     data class PermState(
@@ -62,10 +72,14 @@ object PermissionHelper {
         val overlayApi = canDrawOverlays(ctx)
         val overlayMounted = com.aqi.ccb.gateway.FloatingBall.isMounted()
         val overlayAttachedOnce = com.aqi.ccb.gateway.FloatingBall.everAttached(ctx)
+        // 关键：不能因为「球能挂上」就打勾说已授予。
+        // 系统里 appops 确实可能还是 default（未授予），
+        // 只是 vivo 自有白名单让 addView 成功了。
+        // 这种情况必须呈现为 CONFLICT，让用户自己决定去不去系统里开。
         val overlayStatus = when {
-            overlayMounted -> PermStatus.GRANTED   // 真挂着 = 权限铁定有效
-            overlayApi -> PermStatus.GRANTED       // API 说可以
-            overlayAttachedOnce -> PermStatus.UNKNOWN
+            overlayApi -> PermStatus.GRANTED            // 系统确认已授予
+            overlayMounted -> PermStatus.CONFLICT       // 系统说没有，实际能用
+            overlayAttachedOnce -> PermStatus.UNKNOWN   // 曾能用，现未挂载
             else -> PermStatus.DENIED
         }
         val overlayGranted = overlayStatus == PermStatus.GRANTED
@@ -77,6 +91,9 @@ object PermissionHelper {
                 granted = overlayGranted,
                 impact = when (overlayStatus) {
                     PermStatus.GRANTED -> ""
+                    PermStatus.CONFLICT -> "系统显示未授予，但悬浮球正在正常工作" +
+                        "（可能由厂商白名单放行）。建议仍去系统里正式开启，" +
+                        "否则系统更新或重启后可能失效"
                     PermStatus.UNKNOWN -> "曾成功挂载过但系统现在报未授予，可能是权限被撤销"
                     PermStatus.DENIED -> "悬浮球不会显示（当前被系统拒绝）"
                 },
@@ -155,8 +172,8 @@ object PermissionHelper {
 
     /** 悬浮窗状态名：GRANTED / DENIED / UNKNOWN */
     fun overlayStatusName(ctx: Context): String = when {
-        com.aqi.ccb.gateway.FloatingBall.isMounted() -> PermStatus.GRANTED.name
         canDrawOverlays(ctx) -> PermStatus.GRANTED.name
+        com.aqi.ccb.gateway.FloatingBall.isMounted() -> PermStatus.CONFLICT.name
         com.aqi.ccb.gateway.FloatingBall.everAttached(ctx) -> PermStatus.UNKNOWN.name
         else -> PermStatus.DENIED.name
     }
