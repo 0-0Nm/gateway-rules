@@ -49,6 +49,40 @@ class GatewayServer(
     /** 本地拒绝数（401/404/路径错误），与上游失败分开，避免污染成功率 */
     @Volatile var localRejects: Long = 0
 
+    // ---- 近期失败时间戳（滑动窗口），供「中断」状态判定 ----
+    //
+    // 为什么需要：STATE_ERROR 定义了却从未被设置，等于死状态，
+    // 悬浮球永远不会显示「中断」，即使上游连续挂掉。
+    // 若要恢复它，必须用真实数据驱动，不能造假。
+    // 这里记录每次上游失败的时间戳，按时间窗口自然衰减。
+    private val recentFailureMs = java.util.concurrent.ConcurrentLinkedDeque<Long>()
+
+    /** 记录一次失败（供 fail() 与 handleChat 的失败分支调用） */
+    private fun noteFailureTs() {
+        val now = System.currentTimeMillis()
+        recentFailureMs.addLast(now)
+        // 修剪超过 5 分钟的记录，避免无界增长
+        while (true) {
+            val head = recentFailureMs.peekFirst() ?: break
+            if (now - head > 5 * 60_000L) recentFailureMs.pollFirst() else break
+        }
+    }
+
+    /** 窗口内失败次数（供悬浮球「中断」判定与 diag 展示） */
+    fun recentFailureCountPublic(windowMs: Long = 60_000L): Int {
+        val now = System.currentTimeMillis()
+        var n = 0
+        for (t in recentFailureMs) {
+            if (now - t <= windowMs) n++
+        }
+        return n
+    }
+    /** 最近一次失败距今毫秒；无失败返回 -1 */
+    fun lastFailureAgoMsPublic(): Long {
+        val last = recentFailureMs.peekLast() ?: return -1L
+        return System.currentTimeMillis() - last
+    }
+
     // ---- 诊断指标（照 DeepSeek 本地 API 的实时监控面板）----
     /** 当前 TCP 连接数（accept 后 +1，关闭后 -1） */
     private val tcpConnections = AtomicInteger(0)
@@ -430,6 +464,7 @@ class GatewayServer(
 
         val failReason = lastErr ?: "unknown"
         totalFail++
+        noteFailureTs()   // 记入失败窗口，供«中断»状态判定
         latestFailure = failReason
         latestFailureReason = classifyFailure(failReason)
         GateLog.requestEnd(reqId, false, "-", 0.0, listOf("all_failed"))
@@ -548,7 +583,12 @@ class GatewayServer(
         reason: String,
         countAsUpstreamFail: Boolean = true,
     ) {
-        if (countAsUpstreamFail) totalFail++ else localRejects++
+        if (countAsUpstreamFail) {
+            totalFail++
+            noteFailureTs()   // 本地拒绝（401/404）不算上游失败，不记入窗口
+        } else {
+            localRejects++
+        }
         latestFailure = reason
         latestFailureReason = classifyFailure(reason)
         GateLog.warn("gw", "fail code=" + code + " reason=" + reason)
@@ -611,6 +651,9 @@ class GatewayServer(
             .append(esc(esc(latestFailureReason))).append("\"")
         sb.append(",\"pathDiagnosis\":\"").append(esc(esc(pathDiagnosis()))).append("\"")
         sb.append(",\"lanHint\":\"").append(esc(esc(lanHint()))).append("\"")
+        // 失败窗口：悬浮球「中断」状态的判据来源，便于排查
+        sb.append(",\"failWin60s\":").append(recentFailureCountPublic(60_000L))
+        sb.append(",\"lastFailAgoMs\":").append(lastFailureAgoMsPublic())
         sb.append("}")
         // 限流实时
         sb.append(",\"rate\":[")
