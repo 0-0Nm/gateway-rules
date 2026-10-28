@@ -107,7 +107,7 @@ class McpService : Service() {
         }
     }
 
-    private var wakeLock: PowerManager.WakeLock? = null
+    // 物理锁已移到 WakeLockHolder 共享，这里不再持有（避免双倍耗电）
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -123,10 +123,7 @@ class McpService : Service() {
         }
 
         val host = intent?.getStringExtra("host") ?: "127.0.0.1"
-        // 同上：START_STICKY 重启时 intent 可能为 null，
-        // fallback 必须读持久化配置而不是写死 38081。
-        val configPort = com.aqi.ccb.data.AppSettings.mcpPort(this)
-        val port = intent?.getIntExtra("port", configPort) ?: configPort
+        val port = intent?.getIntExtra("port", 38081) ?: 38081
 
         createChannel()
         startForeground(NOTIF_ID, buildNotif("MCP @ $host:$port"))
@@ -136,11 +133,7 @@ class McpService : Service() {
         current?.stop()
         current = null
 
-        // gatewayPort 必须从配置读，不能写死 38080。
-        // 否则用户改了网关端口后，MCP 通过 gw_get_status 上报的 gatewayPort 仍是旧值，
-        // 客户端据此连接会失败。
-        val gatewayPort = com.aqi.ccb.data.AppSettings.gatewayPort(this)
-        val srv = McpServer(port, gatewayPort) { McpBridge(this) }
+        val srv = McpServer(port, 38080) { McpBridge(this) }
         val ok = try {
             srv.start()
         } catch (e: Exception) {
@@ -221,26 +214,13 @@ class McpService : Service() {
 
     // ---------------- WakeLock ----------------
 
+    // 改用共享引用计数锁：与 GatewayService 共用一把物理锁，
+    // 避免两个前台服务各持一把 24 小时 PARTIAL_WAKE_LOCK 造成双倍耗电。
     private fun acquireWakeLock() {
-        if (wakeLock != null) return
-        try {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK, "GatewayRules::McpWakeLock"
-            ).apply {
-                setReferenceCounted(false)
-                acquire(24L * 60 * 60 * 1000)
-            }
-            GateLog.info("mcp", "wakelock acquired")
-        } catch (e: Exception) {
-            GateLog.warn("mcp", "wakelock failed: ${e.message}")
-        }
+        WakeLockHolder.acquire(this, "mcp")
     }
 
     private fun releaseWakeLock() {
-        try {
-            wakeLock?.let { if (it.isHeld) it.release() }
-        } catch (_: Exception) {}
-        wakeLock = null
+        WakeLockHolder.release("mcp")
     }
 }
