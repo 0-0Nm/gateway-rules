@@ -156,6 +156,10 @@ class MainActivity : ComponentActivity() {
         // 之前从未调用导致 diag 里 logDir 恒为空串（这是上一轮的回归）。
         GatewayService.setPendingLogDir(appLogDir.absolutePath)
 
+        // 绑定悬浮球的状态提供者：球上显示的 MCP / 网关状态
+        // 一律实时向服务询问，不用缓存 —— 这修掉「MCP 没开却显示 MA」。
+        com.aqi.ccb.gateway.FloatingBallState.bind()
+
         setContent {
             AppTheme {
                 // UI 样式（圆角/透明度）由 MCP 的 gw_set_ui_style 可实时修改；
