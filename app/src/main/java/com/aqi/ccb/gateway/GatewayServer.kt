@@ -46,6 +46,8 @@ class GatewayServer(
     @Volatile var totalRequests: Long = 0
     @Volatile var totalOk: Long = 0
     @Volatile var totalFail: Long = 0
+    /** 本地拒绝数（401/404/路径错误），与上游失败分开，避免污染成功率 */
+    @Volatile var localRejects: Long = 0
 
     // ---- 诊断指标（照 DeepSeek 本地 API 的实时监控面板）----
     /** 当前 TCP 连接数（accept 后 +1，关闭后 -1） */
@@ -125,6 +127,9 @@ class GatewayServer(
         val reqId = "r-" + UUID.randomUUID().toString().take(8)
         val t0 = System.currentTimeMillis()
         val connNow = tcpConnections.incrementAndGet()
+        // inflight 是「处理中请求数」，与 tcpConnections（连接数）不同：
+        // 前者用于并发诊断与限流观察，之前从未增减导致 diag 恒为 0。
+        inflight.incrementAndGet()
         GateLog.info("gw", "conn open #" + connNow + " from=" + (socket.inetAddress?.hostAddress ?: "?"))
         try {
             socket.soTimeout = 30_000   // 客户端读请求头/体，30s 足够，避免长挂占线程
@@ -156,7 +161,8 @@ class GatewayServer(
             if (!authorized(headers)) {
                 fail(output, 401,
                     """{"error":{"message":"unauthorized","type":"auth"}}""",
-                    "http_401 unauthorized")
+                    "http_401 unauthorized",
+                    countAsUpstreamFail = false)
                 return
             }
 
@@ -179,16 +185,20 @@ class GatewayServer(
                 else -> {
                     fail(output, 404,
                         """{"error":{"message":"path not found","type":"invalid_request"}}""",
-                        "http_404 path not found: " + path)
+                        "http_404 path not found: " + path,
+                        countAsUpstreamFail = false)
                 }
             }
             GateLog.info("http", "done rid=$reqId ${System.currentTimeMillis() - t0}ms")
         } catch (e: Exception) {
             GateLog.error("gw", "connection error rid=$reqId", e)
         } finally {
-            val left = tcpConnections.decrementAndGet()
+            tcpConnections.decrementAndGet()
+            inflight.decrementAndGet()
+            // clientDisconnects 语义：每个连接结束就 +1（原来只在连接数归零时 +1，
+            // 并发下数字完全失真）。
+            clientDisconnects++
             try { socket.close() } catch (_: Exception) {}
-            if (left <= 0) clientDisconnects++
         }
     }
 
@@ -277,7 +287,20 @@ class GatewayServer(
                 " order=" + ordered.joinToString(",") { it.p.id }
         )
 
-        // ---- 顺序尝试（execute=first 语义；race 需并发，此处按顺序保证稳定性）----
+        // ---- 执行算子分派 ----
+        // 之前这里完全没读 rule.execute.op，用户在 UI 选 race/hedge 等
+        // 实际都跑 first，属于静默忽略配置。
+        // 现在：已实现的算子正常分派；未实现的显式降级并记录，绝不静默。
+        val execOp = rule.execute.op.ifBlank { "first" }
+        val IMPLEMENTED_OPS = setOf("first")
+        if (execOp !in IMPLEMENTED_OPS) {
+            GateLog.warn(
+                "execute",
+                "op=" + execOp + " 尚未实现，降级为 first（reqId=" + reqId + "）"
+            )
+        }
+
+        // ---- 顺序尝试（first 语义）----
         // ---- 请求变换：转发前应用（只影响发往上游的 body 与头，不改本地逻辑）----
         val transformed: TransformedRequest = if (vmTransforms.isNotEmpty()) {
             RequestTransform.apply(vmTransforms, body).also { tr ->
@@ -307,6 +330,14 @@ class GatewayServer(
                     val latency = (System.currentTimeMillis() - at).toDouble()
                     c.p.latEwma = c.p.latEwma * 0.8 + latency * 0.2
                     c.p.errors = 0
+                    // 关键修复：成功即恢复熔断。
+                    // 原来只清 errors，breaker 永远停在 OPEN，
+                    // status 面板一直显示 OPEN 且 opBreakerFilter 长期误判。
+                    if (c.p.breaker != BreakerState.CLOSED) {
+                        GateLog.info("breaker", "recover provider=" + c.p.id)
+                        c.p.breaker = BreakerState.CLOSED
+                        c.p.openUntilMs = 0L
+                    }
                     c.p.lastUsedMs = System.currentTimeMillis()
                     limiter.noteSuccess(c.p.id)   // 成功即重置软限流退避
                     latestRoute = c.m.modelId + "@" + c.p.id
@@ -503,8 +534,19 @@ class GatewayServer(
      * 之前 6 处失败路径各写各的，诊断面板只看到其中一处，
      * 导致"失败 1 次但原因空白"——这是真缺口。
      */
-    private fun fail(output: OutputStream, code: Int, json: String, reason: String) {
-        totalFail++
+    /**
+     * 统一失败出口。
+     * @param countAsUpstreamFail true=计入 totalFail（上游问题）
+     *                            false=本地拒绝（401/404 等），只计数不污染成功率
+     */
+    private fun fail(
+        output: OutputStream,
+        code: Int,
+        json: String,
+        reason: String,
+        countAsUpstreamFail: Boolean = true,
+    ) {
+        if (countAsUpstreamFail) totalFail++ else localRejects++
         latestFailure = reason
         latestFailureReason = classifyFailure(reason)
         GateLog.warn("gw", "fail code=" + code + " reason=" + reason)
@@ -543,6 +585,7 @@ class GatewayServer(
         sb.append(",\"requests\":").append(totalRequests)
         sb.append(",\"ok\":").append(totalOk)
         sb.append(",\"fail\":").append(totalFail)
+        sb.append(",\"localRejects\":").append(localRejects)
         sb.append(",\"inflight\":").append(inflight.get())
         val sw = SwitchPolicy.stats()
         sb.append(",\"switch\":{\"bindings\":").append(sw["bindings"])
