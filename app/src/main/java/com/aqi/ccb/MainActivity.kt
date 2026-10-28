@@ -244,6 +244,12 @@ class MainActivity : ComponentActivity() {
                                 .canPostNotification(this),
                             permBattery = com.aqi.ccb.gateway.PermissionHelper
                                 .isIgnoringBatteryOptimizations(this),
+                            // 电池项精确三态与判定依据（vivo 上 API 会假阴性，
+                            // 单靠布尔会把"已加入"误报成"未加入"）
+                            permBatteryStatus = com.aqi.ccb.gateway.PermissionHelper
+                                .batteryStatusName(this),
+                            permBatteryEvidence = com.aqi.ccb.gateway.PermissionHelper
+                                .batteryEvidence(this),
                             floatError = com.aqi.ccb.gateway.FloatingBall.lastAttachError,
                             mcpRunning = mcpServer?.isRunning() == true,
                             // 实际监听端口（来自 McpServer），与草稿分开，避免显示未生效值
@@ -458,7 +464,15 @@ class MainActivity : ComponentActivity() {
      * 必须应用自己引导到设置页。之前只在设置页显示状态，用户不知道要开，
      * 表现就是「悬浮球设了却不显示」「后台被冻结」。
      */
+    /** 上次执行 checkPermissionsOnStart 的时刻，用于防抖（onResume 会频繁触发） */
+    private var lastPermCheckMs = 0L
+
     private fun checkPermissionsOnStart() {
+        // 防抖：5 秒内重复调用直接返回，避免日志刷屏（曾出现连续 8-10 条重复记录）
+        val now = System.currentTimeMillis()
+        if (now - lastPermCheckMs < 5_000L) return
+        lastPermCheckMs = now
+
         val list = com.aqi.ccb.gateway.PermissionHelper.checkAll(this)
         val missing = list.filter { !it.granted }
         if (missing.isEmpty()) {
@@ -478,7 +492,8 @@ class MainActivity : ComponentActivity() {
         permPrompt = missing.map { it.key to it.title }
         GateLog.warn(
             "perm",
-            "startup missing permissions: " + missing.joinToString(",") { it.key }
+            "startup missing permissions: " +
+                missing.joinToString(",") { it.key + "(" + it.status + " " + it.evidence + ")" }
         )
     }
 
