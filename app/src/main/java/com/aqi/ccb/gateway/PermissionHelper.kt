@@ -147,6 +147,74 @@ object PermissionHelper {
     fun missingKeys(ctx: Context): List<String> =
         checkAll(ctx).filter { !it.granted }.map { it.key }
 
+    // ---------------- 厂商自启动管理（解冻唯一有效路径） ----------------
+
+    /**
+     * 跳转到厂商「自启动 / 后台高耗电」管理页。
+     *
+     * 为什么必须有这个：
+     *   vivo 的 cgroup_freeze 会在后台把进程整个挂起（cgroup.freeze=1，
+     *   线程 utime 停止增长），此时前台服务仍显示 isForeground=true，
+     *   但网关不响应、悬浮球画不出来。电池白名单挡不住这个冻结，
+     *   必须进「自启动管理」把应用加入允许列表。
+     */
+    fun openAutoStart(ctx: Context): Boolean {
+        // 各家 ROM 的类名，逐个试
+        val candidates = listOf(
+            // vivo / iQOO
+            "com.vivo.permissionmanager" to
+                "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+            "com.iqoo.secure" to
+                "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager",
+            "com.iqoo.secure" to
+                "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
+            // 小米
+            "com.miui.securitycenter" to
+                "com.miui.permcenter.autostart.AutoStartManagementActivity",
+            // OPPO / realme
+            "com.coloros.safecenter" to
+                "com.coloros.safecenter.startupapp.StartupAppListActivity",
+            "com.oppo.safe" to
+                "com.oppo.safe.permission.startup.StartupAppListActivity",
+            // 华为
+            "com.huawei.systemmanager" to
+                "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            // 三星 / 通用
+            "com.samsung.android.lool" to
+                "com.samsung.android.sm.ui.battery.BatteryActivity",
+        )
+        for ((pkg, cls) in candidates) {
+            try {
+                val i = Intent().apply {
+                    setClassName(pkg, cls)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                ctx.startActivity(i)
+                GateLog.info("perm", "autoStart opened: $pkg/$cls")
+                return true
+            } catch (_: Exception) {
+                // 该 ROM 没有这个页面，继续试下一个
+            }
+        }
+        GateLog.warn("perm", "no autostart activity found, fallback to app detail")
+        return try {
+            ctx.startActivity(appDetailIntent(ctx))
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** 当前厂商是否已知会冻结后台（用于 UI 提示） */
+    fun isFreezeProneRom(): Boolean {
+        val brand = (android.os.Build.BRAND ?: "").lowercase()
+        val manufacturer = (android.os.Build.MANUFACTURER ?: "").lowercase()
+        val s = "$brand $manufacturer"
+        return s.contains("vivo") || s.contains("iqoo") || s.contains("oppo") ||
+            s.contains("realme") || s.contains("xiaomi") || s.contains("redmi") ||
+            s.contains("huawei") || s.contains("honor")
+    }
+
     const val KEY_OVERLAY = "overlay"
     const val KEY_NOTIFICATION = "notification"
     const val KEY_BATTERY = "battery"
