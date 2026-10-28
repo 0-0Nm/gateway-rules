@@ -193,6 +193,10 @@ class GatewayServer(
 
         // ---- 虚拟模型优先: 客户端请求的 model 名若命中虚拟模型, 用其绑定的 members 做候选 ----
         val resolved = VirtualModelResolver.resolve(modelId, virtualModels, providers)
+        // 该虚拟模型绑定的请求变换链（指纹清洗/UA伪装/prompt 注入等）
+        val vmTransforms: List<TransformSpec> = if (resolved != null) {
+            virtualModels.firstOrNull { it.name == modelId && it.enabled }?.transforms ?: emptyList()
+        } else emptyList()
         var cands: List<Cand>
         val targetModelId: String
         if (resolved != null) {
@@ -235,6 +239,19 @@ class GatewayServer(
         )
 
         // ---- 顺序尝试（execute=first 语义；race 需并发，此处按顺序保证稳定性）----
+        // ---- 请求变换：转发前应用（只影响发往上游的 body 与头，不改本地逻辑）----
+        val transformed: TransformedRequest = if (vmTransforms.isNotEmpty()) {
+            RequestTransform.apply(vmTransforms, body).also { tr ->
+                GateLog.info(
+                    "transform",
+                    "vmodel=" + modelId + " chain=" + tr.trace.joinToString(",") +
+                        " body " + body.size + "->" + tr.body.size
+                )
+            }
+        } else {
+            TransformedRequest(body, emptyMap(), emptySet(), emptyList())
+        }
+
         var lastErr: String? = null
         for (c in ordered) {
             val permit = limiter.acquire(c.p.id)
@@ -245,13 +262,14 @@ class GatewayServer(
             }
             val at = System.currentTimeMillis()
             try {
-                val conn = openUpstream(c, body)
+                val conn = openUpstream(c, transformed, targetModelId)
                 val code = conn.responseCode
                 if (code in 200..299) {
                     val latency = (System.currentTimeMillis() - at).toDouble()
                     c.p.latEwma = c.p.latEwma * 0.8 + latency * 0.2
                     c.p.errors = 0
                     c.p.lastUsedMs = System.currentTimeMillis()
+                    limiter.noteSuccess(c.p.id)   // 成功即重置软限流退避
                     GateLog.attempt(reqId, c.p.id, modelId, true, latency, code, null)
                     relay(output, conn, stream)
                     SwitchPolicy.onSuccess(
@@ -267,9 +285,19 @@ class GatewayServer(
                     val errBody = runCatching { conn.errorStream?.readBytes()?.toString(Charsets.UTF_8) }.getOrNull()
                     c.p.errors += 1
                     RuntimeState.noteError(c.p.id)
-                    if (code == 429) {
+                    // 429 / 限流：软限流指数退避（照 wb.apk 的 soft_rate_sec）
+                    // 首次歇 softRateSec（默认600s），连续被限 2 倍递增，封顶 softRateMaxSec
+                    val isRateLimited = code == 429 ||
+                        (errBody != null && looksRateLimited(errBody))
+                    if (isRateLimited) {
+                        val restSec = limiter.noteSoftRateLimit(c.p.id)
                         c.p.breaker = BreakerState.OPEN
-                        c.p.openUntilMs = System.currentTimeMillis() + 600_000
+                        c.p.openUntilMs = System.currentTimeMillis() + (restSec * 1000).toLong()
+                        GateLog.warn(
+                            "ratelimit",
+                            "soft_rest provider=" + c.p.id + " " + restSec.toInt() +
+                                "s streak=" + RuntimeState.errorRate(c.p.id, 3_600_000)
+                        )
                     }
                     GateLog.attempt(reqId, c.p.id, modelId, false, latency, code, errBody?.take(200))
                     lastErr = "http_$code"
@@ -291,7 +319,16 @@ class GatewayServer(
         writeJson(output, 502, """{"error":{"message":"all providers failed: ${esc(lastErr ?: "")}","type":"upstream"}}""")
     }
 
-    private fun openUpstream(c: Cand, body: ByteArray): HttpURLConnection {
+    /**
+     * 构造上游请求。
+     * @param tr 已应用变换的请求（body + 头注入/删除指令）
+     * @param targetModelId 虚拟模型命中时需改写的真实 modelId
+     */
+    private fun openUpstream(
+        c: Cand,
+        tr: TransformedRequest,
+        targetModelId: String,
+    ): HttpURLConnection {
         val base = c.p.baseUrl.trimEnd('/')
         val url = URL("$base/chat/completions")
         val conn = url.openConnection() as HttpURLConnection
@@ -301,9 +338,29 @@ class GatewayServer(
         conn.readTimeout = 90_000
         conn.setRequestProperty("Content-Type", "application/json")
         conn.setRequestProperty("Accept", "text/event-stream, application/json")
+
+        // 变换注入的头（如伪装 UA）
+        tr.setHeaders.forEach { (k, v) ->
+            if (v.isNotEmpty()) conn.setRequestProperty(k, v)
+        }
+
         val key = SecretStore.resolve(c.p)
         if (key.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $key")
-        conn.outputStream.use { it.write(body) }
+
+        // 虚拟模型命中：把 body 里的 model 改写成该 member 的真实 modelId
+        var outBody = tr.body
+        if (targetModelId.isNotEmpty() && targetModelId != c.m.modelId) {
+            // targetModelId 已是首个 member；每个候选应各自改写
+        }
+        if (targetModelId.isNotEmpty()) {
+            outBody = runCatching {
+                val j = org.json.JSONObject(String(tr.body, Charsets.UTF_8))
+                j.put("model", c.m.modelId)
+                j.toString().toByteArray(Charsets.UTF_8)
+            }.getOrDefault(tr.body)
+        }
+
+        conn.outputStream.use { it.write(outBody) }
         return conn
     }
 
@@ -398,7 +455,9 @@ class GatewayServer(
         providers.forEachIndexed { i, p ->
             if (i > 0) sb.append(",")
             sb.append("{\"id\":\"").append(esc(esc(p.id))).append("\",")
-            sb.append("\"peek\":").append(peekJson(p.id)).append("}")
+            sb.append("\"peek\":").append(peekJson(p.id))
+            sb.append(",\"softRestSec\":").append(limiter.softRestRemainingSec(p.id))
+            sb.append("}")
         }
         sb.append("]")
         // provider 明细（含 breaker）
@@ -439,6 +498,15 @@ class GatewayServer(
     private fun peekJson(pid: String): String {
         val m = limiter.peek(pid)
         return """{"tokens":${m["tokens"]},"inflight":${m["inflight"]},"can_send":${m["can_send"]},"wait_ms":${m["wait_ms"]}}"""
+    }
+
+    /** 上游即使回 200，正文仍可能写着限流——识别出来同样走软限流 */
+    private fun looksRateLimited(err: String): Boolean {
+        val s = err.lowercase()
+        return s.contains("rate limit") || s.contains("rate_limit") ||
+            s.contains("too many requests") || s.contains("quota exceeded") ||
+            s.contains("请求过于频繁") || s.contains("限流") ||
+            s.contains("调用频率")
     }
 
     private fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"")
