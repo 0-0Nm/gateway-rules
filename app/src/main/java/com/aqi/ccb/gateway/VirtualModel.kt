@@ -30,6 +30,8 @@ data class VirtualModel(
     val enabled: Boolean = true,
     val ruleId: String = "default",  // 绑定哪条规则
     val members: List<Member> = emptyList(),
+    /** 请求变换链（指纹清洗/UA伪装/提示词注入等），转发前按序执行 */
+    val transforms: List<TransformSpec> = emptyList(),
 ) {
     data class Member(
         val providerId: String,
@@ -43,6 +45,11 @@ data class VirtualModel(
         put("description", description)
         put("enabled", enabled)
         put("ruleId", ruleId)
+        if (transforms.isNotEmpty()) {
+            put("transforms", JSONArray().apply {
+                transforms.forEach { put(it.toJson()) }
+            })
+        }
         put("members", JSONArray().apply {
             members.forEach { m ->
                 put(JSONObject().apply {
@@ -72,7 +79,8 @@ data class VirtualModel(
                         )
                     }
                 }
-            } ?: emptyList()
+            } ?: emptyList(),
+            transforms = TransformSpec.parseList(o.optJSONArray("transforms")),
         )
     }
 }
