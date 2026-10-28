@@ -161,6 +161,8 @@ object FloatingBall {
                     "gap=${gapX},${gapY} alpha=$alphaPercent locked=$locked"
             )
             lastAttachError = null
+            app.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_ATTACHED_ONCE, true).apply()
             return true
         } catch (e: Exception) {
             // 常见原因：appops 为 ignore（权限声明 granted 但实际被拒）
@@ -173,6 +175,21 @@ object FloatingBall {
     /** 最近一次 attach 失败原因；null 表示无错误 */
     @Volatile var lastAttachError: String? = null
         private set
+
+    private const val KEY_ATTACHED_ONCE = "attached_once"
+
+    /**
+     * 是否曾经成功挂载过（持久化）。
+     *
+     * 为什么不能用 isMounted() 当权限证据：
+     *   权限被撤销后，已 addView 的 View 不会立刻被移除，
+     *   isMounted() 仍返回 true —— 于是「权限已关」被误判成「已授予」。
+     * 只有「真的 addView 成功过」这个历史事实才可作为 ROM 假阴性的旁证。
+     */
+    fun everAttached(context: Context): Boolean =
+        context.applicationContext
+            .getSharedPreferences(PREF, Context.MODE_PRIVATE)
+            .getBoolean(KEY_ATTACHED_ONCE, false)
 
     /**
      * 幂等挂载入口 —— 供 Service 在进程重启后自愈挂载。
