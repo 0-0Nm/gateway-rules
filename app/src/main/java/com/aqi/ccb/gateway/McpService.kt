@@ -153,10 +153,13 @@ class McpService : Service() {
         // 但 Activity 不会自动重建，球若只在 Activity 里挂就永远回不来。
         // 这里由服务接管挂载（ensureAttached 幂等，已挂则不重复操作）。
         runCatching {
+            // 绑定真值提供者：进程重启后可能没有 Activity，
+            // 必须由服务自己绑定，否则球会退回缓存的旧状态（显示过期 MA/MD）。
+            FloatingBallState.bind()
             if (FloatingBall.ensureAttached(this)) {
-                FloatingBall.setMcpAlive(ok)
+                FloatingBall.refreshFromProviders()
             }
-            // 看门狗：周期核对窗口是否真的在屏幕上（解冻后图层可能被清）
+            // 看门狗：周期核对窗口是否真的在屏幕上，并刷新状态文字
             FloatingBall.startWatchdog(this, 30_000L)
         }.onFailure { GateLog.warn("float", "service ensureAttached failed: ${it.message}") }
 
