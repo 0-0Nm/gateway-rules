@@ -311,15 +311,23 @@ fun SettingsScreen(
             Spacer(Modifier.height(8.dp))
             CardGroup(title = { Text("权限") }) {
                 val missing = listOf(
-                    Triple("overlay", "悬浮窗", state.permOverlay),
+                    // 只把「确实不可用」的算作缺失：
+                    //   overlay CONFLICT/UNKNOWN 时球其实是好的，不该报缺
+                    //   battery UNKNOWN 时无法确认，不该报缺
+                    Triple("overlay", "悬浮窗",
+                        state.permOverlayStatus != "DENIED"),
                     Triple("notification", "通知", state.permNotification),
-                    Triple("battery", "忽略电池优化", state.permBattery),
+                    Triple("battery", "忽略电池优化",
+                        state.permBattery || state.permBatteryStatus != "DENIED"),
                 ).filter { !it.third }
 
                 if (missing.isEmpty()) {
                     item(
-                        headlineContent = { Text("全部已授予 ✓") },
-                        supportingContent = { Text("悬浮窗 / 通知 / 电池白名单均正常") },
+                        headlineContent = { Text("无阻塞项 ✓") },
+                        supportingContent = {
+                            Text("功能可用。若某项显示「系统未开 / 待确认」，「+"
+                                + "那是系统查询不可靠，不是功能不可用")
+                        },
                     )
                 } else {
                     item(
@@ -342,26 +350,39 @@ fun SettingsScreen(
                     onClick = { onOpenPerm?.invoke("overlay") },
                     headlineContent = { Text("悬浮窗") },
                     supportingContent = {
-                        val unknown = state.permOverlayStatus == "UNKNOWN"
+                        // 状态含义：
+                        //   GRANTED  系统确认已授予
+                        //   CONFLICT 系统报未授予，但悬浮球实际在正常工作（厂商白名单放行）
+                        //   UNKNOWN  曾能用，现在没挂载，无法确认
+                        //   DENIED   确实不能用
                         Text(
-                            when {
-                                state.permOverlay -> "已授予"
-                                unknown -> "曾成功挂载过，但系统现在报未授予（可能已被撤销），请点右侧确认"
+                            when (state.permOverlayStatus) {
+                                "GRANTED" -> "系统已确认授予"
+                                "CONFLICT" -> "⚠ 系统显示未授予，但悬浮球正在正常工作" +
+                                    "（可能由厂商白名单放行）。建议仍去系统里正式开启，" +
+                                    "否则系统更新或重启后可能失效"
+                                "UNKNOWN" -> "曾成功挂载过，但系统现在报未授予（可能已被撤销），请点右侧确认"
                                 else -> "未授予 · 点击去开启（悬浮球必需）"
                             },
-                            color = when {
-                                state.permOverlay -> MaterialTheme.colorScheme.onSurfaceVariant
-                                unknown -> MaterialTheme.colorScheme.tertiary
+                            color = when (state.permOverlayStatus) {
+                                "GRANTED" -> MaterialTheme.colorScheme.onSurfaceVariant
+                                "CONFLICT" -> MaterialTheme.colorScheme.tertiary
+                                "UNKNOWN" -> MaterialTheme.colorScheme.tertiary
                                 else -> MaterialTheme.colorScheme.error
                             }
                         )
                     },
                     trailingContent = {
                         Text(
-                            when {
-                                state.permOverlay -> "✓"
-                                state.permOverlayStatus == "UNKNOWN" -> "待确认"
+                            when (state.permOverlayStatus) {
+                                "GRANTED" -> "✓"
+                                "CONFLICT" -> "系统未开"
                                 else -> "去开启"
+                            },
+                            color = when (state.permOverlayStatus) {
+                                "GRANTED" -> MaterialTheme.colorScheme.onSurfaceVariant
+                                "CONFLICT" -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.primary
                             }
                         )
                     },
