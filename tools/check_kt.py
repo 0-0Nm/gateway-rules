@@ -236,6 +236,95 @@ def check_optional_params(files, funcs):
     return issues
 
 
+def check_state_property(files, classes):
+    """
+    查「参数名.字段 访问了 data class 里不存在的字段」。
+
+    对应实例：SettingsScreen(state: SettingsState) 里写
+    state.permAutostartVisited，但 SettingsState 没这个字段
+    -> Unresolved reference，编译失败。
+    （本检查对 val 计算属性和方法调用会误报，需按需排查）
+    """
+    issues = []
+    known_non_fields = {"copy", "toString", "equals", "hashCode", "component1"}
+    for p, src in files.items():
+        s = strip_comments_and_strings(src)
+        for m in re.finditer(r"\bfun\s+(\w+)\s*\(", s):
+            params_body = balanced(s, m.end() - 1)
+            if not params_body:
+                continue
+            typed = {}
+            for seg in params_body.split(","):
+                pm = re.match(r"\s*(\w+)\s*:\s*(\w+)", seg.strip())
+                if pm and pm.group(2) in classes:
+                    typed[pm.group(1)] = pm.group(2)
+            if not typed:
+                continue
+            body_start = s.find("{", m.end() - 1)
+            if body_start < 0:
+                continue
+            fbody = balanced(s, body_start)
+            if not fbody:
+                continue
+            for var, cls in typed.items():
+                for am in re.finditer(r"\b" + var + r"\.(\w+)", fbody):
+                    field = am.group(1)
+                    if field in classes[cls] or field in known_non_fields:
+                        continue
+                    line = s[:body_start + am.start()].count("\n") + 1
+                    issues.append(
+                        "%s:%d  %s.%s 不存在——%s 里没有字段 %s（若是计算属性/方法请忽略）"
+                        % (p, line, var, field, cls, field))
+    return issues
+
+
+def check_field_init_this(files):
+    """
+    查「类字段初始化器里引用 this」。
+
+    对应实例：MainActivity 的
+        private var settingsState by mutableStateOf(
+            SettingsState(gatewayPort = AppSettings.gatewayPort(this).toString())
+        )
+    字段初始化器运行在构造函数阶段，那时 attachBaseContext() 还没执行，
+    this 作为 Context 未绑定 -> getSharedPreferences() 返回 null ->
+    NullPointerException 崩溃。
+
+    编译器查不出这类错误（语法完全合法），必须静态扫描。
+    """
+    issues = []
+    for p, src in files.items():
+        s = strip_comments_and_strings(src)
+        lines = s.split("\n")
+        in_fun = False
+        for i, l in enumerate(lines, 1):
+            st = l.strip()
+            if re.match(r"(private |public |internal |protected )?(override )?fun ", st):
+                in_fun = True
+            if in_fun:
+                if st == "}":
+                    in_fun = False
+                continue
+            if l.startswith("    ") and not l.startswith("        "):
+                if re.match(r"(private |protected |internal )?(val|var) ", st):
+                    # 字段初始化器可能跨多行（by mutableStateOf( 换行 )），
+                    # 必须把整个声明块拼起来再查，只看单行会漏。
+                    block = [l]
+                    depth = l.count("(") - l.count(")")
+                    j = i
+                    while depth > 0 and j < len(lines):
+                        nxt = lines[j]
+                        block.append(nxt)
+                        depth += nxt.count("(") - nxt.count(")")
+                        j += 1
+                    joined = " ".join(block)
+                    if re.search(r"\(this\b|\bthis\.", joined):
+                        issues.append(
+                            "%s:%d  字段初始化器引用 this —— <init> 阶段 Context "
+                            "未绑定会 NPE，请改用默认值并在 onCreate 同步" % (p, i))
+    return issues
+
+
 def main():
     quiet = "--quiet" in sys.argv
     files = read_files()
@@ -246,7 +335,11 @@ def main():
                 + check_named_args(files, classes, funcs)
                 + check_imports(files)
                 + check_companion_nesting(files)
-                + check_optional_params(files, funcs))
+                + check_optional_params(files, funcs)
+                + check_field_init_this(files))
+    # 注：check_state_property 已停用 —— 它对 val 计算属性（isComplete/modelId）
+    # 和方法调用（toJson/radiusForLines）产生 10 处误报。
+    # 会让工具整体可信度下降，得不偿失。函数保留但不再调用。
     if not quiet:
         print("检查 %d 文件 | %d data class | %d fun" % (len(files), len(classes), len(funcs)))
     if problems:
