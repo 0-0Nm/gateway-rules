@@ -62,6 +62,8 @@ class MainActivity : ComponentActivity() {
                 mcpRunning = running,
                 mcpPortApplied = applied,
             )
+            // 卫星球：MA = alive / MD = died
+            com.aqi.ccb.gateway.FloatingBall.setMcpAlive(running)
             GateLog.info("mcp", "state running=" + running + " host=" + host + " port=" + port)
         }
     }
@@ -171,6 +173,7 @@ class MainActivity : ComponentActivity() {
                             AppSettings.setFloatEnabled(this, v)
                             if (v && server?.isRunning() == true) {
                                 FloatingBall.attach(this)
+                                FloatingBall.setMcpAlive(McpService.running)
                             } else if (!v) {
                                 FloatingBall.detach()
                             }
@@ -311,8 +314,18 @@ class MainActivity : ComponentActivity() {
 
     private fun startTicker() {
         ui.postDelayed(object : Runnable {
+            private var tick = 0
             override fun run() {
+                tick++
                 if (route == "main") refreshMain()
+                // 每 3 秒核对一次 MCP 存活，防止 Service 状态未及时回调导致球显示失真
+                if (tick % 3 == 0) {
+                    val alive = McpService.current?.isRunning() == true
+                    if (alive != FloatingBall.isMcpAlive()) {
+                        FloatingBall.setMcpAlive(alive)
+                        GateLog.info("float", "mcp probe -> " + (if (alive) "MA" else "MD"))
+                    }
+                }
                 ui.postDelayed(this, 1000)
             }
         }, 1000)
@@ -402,6 +415,8 @@ class MainActivity : ComponentActivity() {
             if (AppSettings.floatEnabled(this)) {
                 FloatingBall.attach(this)
                 FloatingBall.setState(FloatingBall.STATE_IDLE)
+                // 卫星球初值：反映 MCP 是否已活
+                FloatingBall.setMcpAlive(McpService.running)
             }
             startMcpIfEnabled()
         } else {
