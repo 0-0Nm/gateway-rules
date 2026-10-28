@@ -197,8 +197,24 @@ class MainActivity : ComponentActivity() {
                                 onClick = {
                                     val first = permPrompt.firstOrNull()?.first
                                     if (first != null) {
-                                        com.aqi.ccb.gateway.PermissionHelper
+                                        val ok2 = com.aqi.ccb.gateway.PermissionHelper
                                             .openSettings(this, first)
+                                        val deg2 = com.aqi.ccb.gateway.PermissionHelper
+                                            .lastOpenDegraded
+                                        if (!ok2) {
+                                            com.aqi.ccb.ui.UiToast.error(
+                                                "打不开设置页，请手动到系统设置里授权"
+                                            )
+                                        } else if (deg2 && first == "battery") {
+                                            com.aqi.ccb.ui.UiToast.error(
+                                                "请手动到 设置→电池→后台耗电管理，" +
+                                                    "把本应用设为「允许后台运行」"
+                                            )
+                                        } else if (deg2) {
+                                            com.aqi.ccb.ui.UiToast.error(
+                                                "已打开应用详情，请手动开启对应权限"
+                                            )
+                                        }
                                     }
                                 }
                             ) { androidx.compose.material3.Text("去开启") }
@@ -240,6 +256,10 @@ class MainActivity : ComponentActivity() {
                             // ---- 权限状态（每次渲染重新读取，用户改完设置回来即刷新）----
                             permOverlay = com.aqi.ccb.gateway.PermissionHelper
                                 .canDrawOverlays(this),
+                            // 悬浮窗三态：权限被撤销后已挂载的 View 不会立刻消失，
+                            // 所以不能只看"是不是还挂着"，要看系统 API + 历史挂载记录
+                            permOverlayStatus = com.aqi.ccb.gateway.PermissionHelper
+                                .overlayStatusName(this),
                             permNotification = com.aqi.ccb.gateway.PermissionHelper
                                 .canPostNotification(this),
                             permBattery = com.aqi.ccb.gateway.PermissionHelper
@@ -298,8 +318,20 @@ class MainActivity : ComponentActivity() {
                         },
                         onOpenPerm = { key ->
                             val ok = com.aqi.ccb.gateway.PermissionHelper.openSettings(this, key)
-                            if (!ok) {
-                                com.aqi.ccb.ui.UiToast.error("无法打开设置页，请手动到应用详情里授权")
+                            val degraded = com.aqi.ccb.gateway.PermissionHelper.lastOpenDegraded
+                            when {
+                                !ok -> com.aqi.ccb.ui.UiToast.error(
+                                    "打不开设置页，请手动到 系统设置→应用→GatewayRules 里授权"
+                                )
+                                degraded && key == "battery" -> com.aqi.ccb.ui.UiToast.error(
+                                    "本机没有标准电池页，已为你打开应用详情。请手动到 " +
+                                        "设置→电池→后台耗电管理 找到本应用并设为「允许后台运行」"
+                                )
+                                degraded -> com.aqi.ccb.ui.UiToast.error(
+                                    "已打开应用详情，请在该页手动找到「" +
+                                        (if (key == "overlay") "显示在其他应用上层" else "通知") +
+                                        "」并开启"
+                                )
                             }
                         },
                         onRequestAllPerms = {
