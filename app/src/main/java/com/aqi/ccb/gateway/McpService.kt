@@ -156,6 +156,8 @@ class McpService : Service() {
             if (FloatingBall.ensureAttached(this)) {
                 FloatingBall.setMcpAlive(ok)
             }
+            // 看门狗：周期核对窗口是否真的在屏幕上（解冻后图层可能被清）
+            FloatingBall.startWatchdog(this, 30_000L)
         }.onFailure { GateLog.warn("float", "service ensureAttached failed: ${it.message}") }
 
         return START_STICKY
