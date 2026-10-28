@@ -21,14 +21,29 @@ import android.provider.Settings
  */
 object PermissionHelper {
 
+    /**
+     * 权限判定三态。
+     *
+     * 为什么需要三态：某些 ROM（vivo 尤甚）会对标准 API 假阴性——
+     * 系统层面明明已加入白名单，PowerManager.isIgnoringBatteryOptimizations()
+     * 仍返回 false。用二态布尔会把"已授予"误报成"未授予"，用户看到就是
+     * "我明明开了它说没开"。
+     */
+    enum class PermStatus { GRANTED, DENIED, UNKNOWN }
+
     /** 单项权限状态 */
     data class PermState(
         val key: String,
         val title: String,
         val desc: String,
+        /** 兼容旧调用：仅 GRANTED 为 true（UNKNOWN 不算已授予，避免误判） */
         val granted: Boolean,
         /** 该项为什么重要（缺了会怎样） */
         val impact: String,
+        /** 精确三态（新） */
+        val status: PermStatus = if (granted) PermStatus.GRANTED else PermStatus.DENIED,
+        /** 判定依据，便于排查"显示与实际不符" */
+        val evidence: String = "",
     )
 
     /**
@@ -38,19 +53,24 @@ object PermissionHelper {
     fun checkAll(ctx: Context): List<PermState> {
         val list = mutableListOf<PermState>()
 
-        // 1) 悬浮窗（特殊权限，走 AppOps，最容易被忽略）
-        val overlay = canDrawOverlays(ctx)
+        // 1) 悬浮窗 —— 双信号：API 判定 + 实际挂载成功记录
+        val overlayApi = canDrawOverlays(ctx)
+        val overlayAttached = com.aqi.ccb.gateway.FloatingBall.lastAttachError == null &&
+            com.aqi.ccb.gateway.FloatingBall.isMounted()
+        val overlayGranted = overlayApi || overlayAttached
         list.add(
             PermState(
                 key = KEY_OVERLAY,
                 title = "悬浮窗",
                 desc = "显示网关状态球与 MCP 状态球",
-                granted = overlay,
-                impact = if (overlay) "" else "悬浮球不会显示（当前被系统拒绝）",
+                granted = overlayGranted,
+                impact = if (overlayGranted) "" else "悬浮球不会显示（当前被系统拒绝）",
+                status = if (overlayGranted) PermStatus.GRANTED else PermStatus.DENIED,
+                evidence = "api=" + overlayApi + " mounted=" + overlayAttached,
             )
         )
 
-        // 2) 通知（Android 13+ 需运行时授权）
+        // 2) 通知
         val notif = canPostNotification(ctx)
         list.add(
             PermState(
@@ -59,23 +79,71 @@ object PermissionHelper {
                 desc = "MCP 前台服务的常驻通知",
                 granted = notif,
                 impact = if (notif) "" else "前台服务通知不可见，系统可能更快回收进程",
+                status = if (notif) PermStatus.GRANTED else PermStatus.DENIED,
+                evidence = "checkSelfPermission",
             )
         )
 
-        // 3) 电池优化白名单（对保活影响最大）
-        val battery = isIgnoringBatteryOptimizations(ctx)
+        // 3) 电池优化白名单 —— 三信号
+        //    a) PowerManager API（标准，但 vivo 假阴性）
+        //    b) 是否曾引导用户去过设置页（说明用户已处理，只是 API 读不准）
+        val batteryApi = isIgnoringBatteryOptimizations(ctx)
+        val batteryVisited = wasPermissionOpened(ctx, KEY_BATTERY)
+        val batteryStatus = when {
+            batteryApi -> PermStatus.GRANTED
+            // API 说否，但用户去过设置页 -> 无法确认，显示"待确认"而不是"未授予"
+            batteryVisited -> PermStatus.UNKNOWN
+            else -> PermStatus.DENIED
+        }
         list.add(
             PermState(
                 key = KEY_BATTERY,
                 title = "忽略电池优化",
                 desc = "防止系统在息屏后杀掉网关与 MCP",
-                granted = battery,
-                impact = if (battery) "" else "息屏后网关可能被回收，表现为客户端突然连不上",
+                granted = batteryApi,
+                impact = if (batteryApi) "" else
+                    if (batteryVisited) "已去过设置页；本机系统对该项判定不可靠，请自行确认"
+                    else "息屏后网关可能被回收，表现为客户端突然连不上",
+                status = batteryStatus,
+                evidence = "pm=" + batteryApi + " visited=" + batteryVisited,
             )
         )
 
         return list
     }
+
+    // ---------------- 供 UI 读取的电池项三态 ----------------
+
+    /** 电池项状态名：GRANTED / DENIED / UNKNOWN */
+    fun batteryStatusName(ctx: Context): String {
+        val api = isIgnoringBatteryOptimizations(ctx)
+        return when {
+            api -> PermStatus.GRANTED.name
+            wasPermissionOpened(ctx, KEY_BATTERY) -> PermStatus.UNKNOWN.name
+            else -> PermStatus.DENIED.name
+        }
+    }
+
+    /** 电池项判定依据，用于面板展示与排障 */
+    fun batteryEvidence(ctx: Context): String {
+        val api = isIgnoringBatteryOptimizations(ctx)
+        val visited = wasPermissionOpened(ctx, KEY_BATTERY)
+        return "pm=" + api + " visited=" + visited
+    }
+
+    // ---------------- 用户是否已经去过该项设置页 ----------------
+
+    private const val PREF = "perm_helper"
+    private const val KEY_PREFIX = "opened_"
+
+    fun markPermissionOpened(ctx: Context, key: String) {
+        ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_PREFIX + key, true).apply()
+    }
+
+    fun wasPermissionOpened(ctx: Context, key: String): Boolean =
+        ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+            .getBoolean(KEY_PREFIX + key, false)
 
     // ---------------- 单项检查 ----------------
 
@@ -126,6 +194,8 @@ object PermissionHelper {
             }
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             ctx.startActivity(intent)
+            // 记录"用户已前往该项设置"，供下次判定时区分"真的没开"与"API 读不准"
+            markPermissionOpened(ctx, key)
             true
         } catch (e: Exception) {
             GateLog.warn("perm", "openSettings($key) failed: ${e.message}")
