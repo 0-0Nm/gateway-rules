@@ -182,6 +182,7 @@ class GatewayService : Service() {
             if (FloatingBall.ensureAttached(this)) {
                 FloatingBall.setMcpAlive(McpService.running)
             }
+            FloatingBall.startWatchdog(this, 30_000L)
         }.onFailure { GateLog.warn("float", "gw ensureAttached failed: ${it.message}") }
 
         return START_STICKY
