@@ -123,7 +123,10 @@ class McpService : Service() {
         }
 
         val host = intent?.getStringExtra("host") ?: "127.0.0.1"
-        val port = intent?.getIntExtra("port", 38081) ?: 38081
+        // 同上：START_STICKY 重启时 intent 可能为 null，
+        // fallback 必须读持久化配置而不是写死 38081。
+        val configPort = com.aqi.ccb.data.AppSettings.mcpPort(this)
+        val port = intent?.getIntExtra("port", configPort) ?: configPort
 
         createChannel()
         startForeground(NOTIF_ID, buildNotif("MCP @ $host:$port"))
@@ -133,7 +136,11 @@ class McpService : Service() {
         current?.stop()
         current = null
 
-        val srv = McpServer(port, 38080) { McpBridge(this) }
+        // gatewayPort 必须从配置读，不能写死 38080。
+        // 否则用户改了网关端口后，MCP 通过 gw_get_status 上报的 gatewayPort 仍是旧值，
+        // 客户端据此连接会失败。
+        val gatewayPort = com.aqi.ccb.data.AppSettings.gatewayPort(this)
+        val srv = McpServer(port, gatewayPort) { McpBridge(this) }
         val ok = try {
             srv.start()
         } catch (e: Exception) {
