@@ -389,6 +389,46 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshMain()
+        // ---- 冻结自愈 ----
+        // vivo 会在后台对进程设 cgroup.freeze=1（内核级挂起，线程 utime 停止增长），
+        // 表现为：两个前台服务都 isForeground=true、进程活着，但网关不响应。
+        // 回到前台后必须主动探测并重启，否则要等系统下一次调度才恢复。
+        ui.postDelayed({ runCatching { thawCheck() } }, 800)
+    }
+
+    /** 回到前台时检查网关是否真在服务；被冻结过则重启 */
+    private fun thawCheck() {
+        val port = mainState.port.toIntOrNull() ?: 38080
+        Thread {
+            val alive = try {
+                val c = java.net.URL("http://127.0.0.1:$port/health")
+                    .openConnection() as java.net.HttpURLConnection
+                c.connectTimeout = 1500
+                c.readTimeout = 1500
+                val code = c.responseCode
+                try { c.disconnect() } catch (_: Exception) {}
+                code in 200..299
+            } catch (e: Exception) {
+                false
+            }
+            if (!alive && AppSettings.gatewayPort(this) > 0) {
+                GateLog.warn("gw", "thaw: gateway unresponsive, restarting service")
+                ui.post {
+                    GatewayService.start(this, port)
+                    com.aqi.ccb.ui.UiToast.show("检测到后台被冻结，已重启网关")
+                }
+                // 服务重启后球可能也没了，补挂
+                ui.postDelayed({
+                    runCatching {
+                        if (AppSettings.floatEnabled(this)) {
+                            if (FloatingBall.ensureAttached(this)) {
+                                FloatingBall.setMcpAlive(McpService.running)
+                            }
+                        }
+                    }
+                }, 1500)
+            }
+        }.start()
     }
 
     override fun onDestroy() {
