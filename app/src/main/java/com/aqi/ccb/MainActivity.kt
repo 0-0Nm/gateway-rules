@@ -270,6 +270,11 @@ class MainActivity : ComponentActivity() {
                                 .batteryStatusName(this),
                             permBatteryEvidence = com.aqi.ccb.gateway.PermissionHelper
                                 .batteryEvidence(this),
+                            // 自启动：Android 无标准 API，只能按"是否前往过"推断
+                            permAutostartStatus = com.aqi.ccb.gateway.PermissionHelper
+                                .autostartStatusName(this),
+                            permAutostartVisited = com.aqi.ccb.gateway.PermissionHelper
+                                .autostartVisited(this),
                             floatError = com.aqi.ccb.gateway.FloatingBall.lastAttachError,
                             mcpRunning = mcpServer?.isRunning() == true,
                             // 实际监听端口（来自 McpServer），与草稿分开，避免显示未生效值
