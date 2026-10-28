@@ -114,6 +114,13 @@ class MainActivity : ComponentActivity() {
     // ---- 聚合页状态 ----
     private var mainState by mutableStateOf(MainUiState())
 
+    // ---- 启动权限引导 ----
+    /** 待处理的缺失权限 key 列表；非空时弹窗 */
+    private var permPrompt by mutableStateOf<List<Pair<String, String>>>(emptyList())
+    /** 弹窗里「不再提示」的记忆 KV */
+    private val PERM_PROMPT_PREF = "perm_prompt"
+    private val PERM_PROMPT_KEY = "dismissed_at"
+
     // ---- 编辑态 ----
     private var editingProviderIndex by mutableStateOf(-1)
     private var providerDraft by mutableStateOf(ProviderDraft())
@@ -155,6 +162,53 @@ class MainActivity : ComponentActivity() {
                 androidx.compose.runtime.CompositionLocalProvider(
                     com.aqi.ccb.ui.LocalUiStyle provides uiStyle
                 ) {
+                // ---- 启动权限弹窗 ----
+                // 缺权限时主动弹，不再静默（悬浮窗是特殊权限，系统永不自动弹）
+                if (permPrompt.isNotEmpty()) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { dismissPermPrompt() },
+                        title = {
+                            androidx.compose.material3.Text(
+                                "需要 ${permPrompt.size} 项权限"
+                            )
+                        },
+                        text = {
+                            androidx.compose.foundation.layout.Column {
+                                androidx.compose.material3.Text(
+                                    "缺少以下权限时，悬浮球不显示 / 后台会被冻结导致客户端连不上："
+                                )
+                                androidx.compose.foundation.layout.Spacer(
+                                    androidx.compose.ui.Modifier.padding(4.dp)
+                                )
+                                permPrompt.forEach { (key, title) ->
+                                    androidx.compose.material3.Text(
+                                        "· " + title,
+                                        modifier = androidx.compose.ui.Modifier.padding(
+                                            vertical = 2.dp
+                                        ),
+                                    )
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            androidx.compose.material3.TextButton(
+                                onClick = {
+                                    val first = permPrompt.firstOrNull()?.first
+                                    if (first != null) {
+                                        com.aqi.ccb.gateway.PermissionHelper
+                                            .openSettings(this, first)
+                                    }
+                                }
+                            ) { androidx.compose.material3.Text("去开启") }
+                        },
+                        dismissButton = {
+                            androidx.compose.material3.TextButton(
+                                onClick = { dismissPermPrompt() }
+                            ) { androidx.compose.material3.Text("稍后") }
+                        },
+                    )
+                }
+
                 when (route) {
                     "provider" -> ProviderEditScreen(
                         draft = providerDraft,
@@ -384,6 +438,49 @@ class MainActivity : ComponentActivity() {
         }
         ui.postDelayed({ runCatching { startGateway() } }, 600)
         startTicker()
+
+        // 启动即检查权限：缺任何一项就弹窗引导，不静默。
+        // 之前只有设置页里能看到权限状态，用户根本不知道要授权。
+        ui.postDelayed({ runCatching { checkPermissionsOnStart() } }, 1200)
+    }
+
+    /**
+     * 启动时检查关键权限，缺任何一项就弹窗。
+     *
+     * 为什么必须做：SYSTEM_ALERT_WINDOW 是特殊权限，系统**永远不会**自动弹窗，
+     * 必须应用自己引导到设置页。之前只在设置页显示状态，用户不知道要开，
+     * 表现就是「悬浮球设了却不显示」「后台被冻结」。
+     */
+    private fun checkPermissionsOnStart() {
+        val list = com.aqi.ccb.gateway.PermissionHelper.checkAll(this)
+        val missing = list.filter { !it.granted }
+        if (missing.isEmpty()) {
+            permPrompt = emptyList()
+            return
+        }
+        // 用户点过「稍后」就当天不再打扰（但换天或新增缺失项会再提示）
+        val prefs = getSharedPreferences(PERM_PROMPT_PREF, MODE_PRIVATE)
+        val dismissedAt = prefs.getLong(PERM_PROMPT_KEY, 0L)
+        val today = System.currentTimeMillis() / 86_400_000L
+        val dismissedToday = dismissedAt / 86_400_000L == today
+        if (dismissedToday) {
+            GateLog.info("perm", "missing=" + missing.joinToString(",") { it.key } +
+                " (dismissed today, skip prompt)")
+            return
+        }
+        permPrompt = missing.map { it.key to it.title }
+        GateLog.warn(
+            "perm",
+            "startup missing permissions: " + missing.joinToString(",") { it.key }
+        )
+    }
+
+    private fun dismissPermPrompt() {
+        getSharedPreferences(PERM_PROMPT_PREF, MODE_PRIVATE)
+            .edit()
+            .putLong(PERM_PROMPT_KEY, System.currentTimeMillis())
+            .apply()
+        permPrompt = emptyList()
     }
 
     override fun onResume() {
