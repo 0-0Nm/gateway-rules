@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -15,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import com.aqi.ccb.data.ProviderDraft
 import com.aqi.ccb.data.ProviderRepo
 import com.aqi.ccb.data.VirtualModelDraft
@@ -436,6 +438,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        // 启动即检查权限：SYSTEM_ALERT_WINDOW 是特殊权限，系统永不自动弹窗，
+        // 必须应用自己弹 AlertDialog 引导。checkPermissionsOnStart 之前
+        // 写了完整实现但从未被调用，导致缺权限时用户完全无感知。
+        ui.postDelayed({ runCatching { checkPermissionsOnStart() } }, 500)
+
         ui.postDelayed({ runCatching { startGateway() } }, 600)
         startTicker()
 
@@ -486,6 +493,8 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshMain()
+        // 用户从权限设置页返回后重新核对，已授予项应从提示里消失
+        runCatching { checkPermissionsOnStart() }
         // ---- 冻结自愈 ----
         // vivo 会在后台对进程设 cgroup.freeze=1（内核级挂起，线程 utime 停止增长），
         // 表现为：两个前台服务都 isForeground=true、进程活着，但网关不响应。
