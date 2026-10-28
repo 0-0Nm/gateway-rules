@@ -181,8 +181,9 @@ class GatewayService : Service() {
 
         // 悬浮球自愈（与 McpService 双保险，谁先启动谁挂，ensureAttached 幂等）
         runCatching {
+            FloatingBallState.bind()
             if (FloatingBall.ensureAttached(this)) {
-                FloatingBall.setMcpAlive(McpService.running)
+                FloatingBall.refreshFromProviders()
             }
             FloatingBall.startWatchdog(this, 30_000L)
         }.onFailure { GateLog.warn("float", "gw ensureAttached failed: ${it.message}") }
