@@ -32,6 +32,7 @@ import com.aqi.ccb.gateway.GatewayServer
 import com.aqi.ccb.gateway.ModelProbe
 import com.aqi.ccb.gateway.BatchTester
 import com.aqi.ccb.gateway.McpServer
+import com.aqi.ccb.gateway.McpService
 import com.aqi.ccb.data.AppSettings
 import com.aqi.ccb.data.McpBridge
 import com.aqi.ccb.data.ModelInfo
@@ -52,7 +53,22 @@ class MainActivity : ComponentActivity() {
 
     private var server: GatewayServer? = null
     private var appLogDir: File = File("/dev/null")
-    private var mcpServer: McpServer? = null
+
+    /** MCP 服务状态监听（照 STRX 的 StateListener），UI 显示实际监听端口 */
+    private val mcpStateListener = object : McpService.StateListener {
+        override fun onStateChanged(running: Boolean, host: String, port: Int) {
+            val applied = if (running && port > 0) port.toString() else ""
+            settingsState = settingsState.copy(
+                mcpRunning = running,
+                mcpPortApplied = applied,
+            )
+            GateLog.info("mcp", "state running=" + running + " host=" + host + " port=" + port)
+        }
+    }
+    // MCP 由前台服务托管（照 STRX 的 McpService 范式）。
+    // 这里从服务读当前实例，别处引用 mcpServer 无需大改。
+    private val mcpServer: McpServer?
+        get() = McpService.current
     private val ui = Handler(Looper.getMainLooper())
 
     // ---- 顶层导航状态 ----
@@ -103,6 +119,8 @@ class MainActivity : ComponentActivity() {
         GateLog.init(appLogDir)
         com.aqi.ccb.ui.UiToast.init(this)
         ProviderRepo.warmUpSecrets(this)
+        // 订阅前台服务的真实状态：UI 端口显示以实际监听为准
+        McpService.addListener(mcpStateListener)
 
         setContent {
             AppTheme {
@@ -283,8 +301,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
+        McpService.removeListener(mcpStateListener)
         server?.stop()
-        mcpServer?.stop()
+        // MCP 由前台服务托管，Activity 销毁时**不能**停止它——
+        // 否则退后台就断连，这正是改用 Service 的目的（照 STRX）。
         FloatingBall.detach()
         super.onDestroy()
     }
@@ -441,38 +461,27 @@ class MainActivity : ComponentActivity() {
 
     private fun startMcpIfEnabled() {
         if (!AppSettings.mcpEnabled(this)) {
-            mcpServer?.stop()
-            mcpServer = null
+            McpService.stop(this)
             return
         }
-        if (mcpServer?.isRunning() == true) return
+        if (McpService.running) return
         val port = AppSettings.mcpPort(this)
-        val srv = McpServer(port, mainState.port.toIntOrNull() ?: 38080) { McpBridge(this) }
-        if (srv.start()) {
-            mcpServer = srv
-            settingsState = settingsState.copy(mcpRunning = true, mcpLastError = null)
-            GateLog.info("mcp", "started on port " + srv.port)
-        } else {
-            mcpServer = srv
-            settingsState = settingsState.copy(
-                mcpRunning = false,
-                mcpLastError = srv.lastError,
-            )
-            GateLog.error("mcp", "start failed port=" + port + " err=" + srv.lastError)
-        }
+        // 交给前台服务：退后台 / Activity 回收都不会断
+        McpService.start(this, "127.0.0.1", port)
+        GateLog.info("mcp", "service start requested port=" + port)
     }
 
     fun toggleMcp(enabled: Boolean) {
         AppSettings.setMcpEnabled(this, enabled)
-        if (enabled) startMcpIfEnabled() else { mcpServer?.stop(); mcpServer = null }
+        if (enabled) startMcpIfEnabled() else McpService.stop(this)
     }
 
     fun setMcpPort(port: Int) {
         AppSettings.setMcpPort(this, port)
         if (AppSettings.mcpEnabled(this)) {
-            mcpServer?.stop()
-            mcpServer = null
-            startMcpIfEnabled()
+            // 服务内部先停旧实例再启新实例，避免 bind 冲突
+            McpService.start(this, "127.0.0.1", port)
+            GateLog.info("mcp", "service restart on port " + port)
         }
     }
 
