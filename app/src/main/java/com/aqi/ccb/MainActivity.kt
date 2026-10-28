@@ -102,13 +102,24 @@ class MainActivity : ComponentActivity() {
 
     // ---- 设置页可观察状态（关键：不能用 AppSettings 每次重组新建快照，
     //      否则受控输入框 value 会回滚导致打不进字，开关也不生效）----
+    // 初始值必须与持久化配置同源，不能硬编码。
+    //
+    // 原来这里写死 mcpEnabled=false，而 AppSettings.mcpEnabled() 默认是 true，
+    // 首次安装启动（还没有 prefs 文件）时两者冲突：
+    //   开关显示「关」   <- 读这里的硬编码 false
+    //   MCP 实际启动     <- startMcpIfEnabled() 读 AppSettings 的 true
+    //   悬浮球显示 MA    <- 读 McpService.current.isRunning() 的真实值
+    // 用户看到「开关关着但球显示 MA」，以为球在乱报，
+    // 实际是球说了真话、开关在说谎。
+    //
+    // 现在全部从 AppSettings 读，三处永远同源。
     private var settingsState by mutableStateOf(
         com.aqi.ccb.ui.SettingsState(
-            gatewayPort = "38080",
-            floatEnabled = true,
-            mcpEnabled = false,
-            mcpPort = "38081",
-            toastEnabled = true,
+            gatewayPort = AppSettings.gatewayPort(this).toString(),
+            floatEnabled = AppSettings.floatEnabled(this),
+            mcpEnabled = AppSettings.mcpEnabled(this),
+            mcpPort = AppSettings.mcpPort(this).toString(),
+            toastEnabled = AppSettings.toastEnabled(this),
             mcpRunning = false,
         )
     )
