@@ -339,6 +339,47 @@ class GatewayServer(
                                 "s streak=" + RuntimeState.errorRate(c.p.id, 3_600_000)
                         )
                     }
+                    // ---- 参数自动修复：400/422 + 文案指向参数问题时，改名重试一次 ----
+                    // 照 wb.apk 的 "max_tokens rejected -> rewritten, retrying in place"
+                    if ((code == 400 || code == 422) && errBody != null) {
+                        val fix = RequestTransform.autoFixParams(transformed.body, errBody)
+                        if (fix != null) {
+                            val fixedBody = fix.first
+                            val fixDesc = fix.second
+                            GateLog.warn(
+                                "transform",
+                                "auto_fix provider=" + c.p.id + " " + fixDesc + " retrying"
+                            )
+                            runCatching {
+                                conn.disconnect()
+                                val retryConn = openUpstream(
+                                    c, transformed.copy(body = fixedBody), targetModelId
+                                )
+                                val retryCode = retryConn.responseCode
+                                if (retryCode in 200..299) {
+                                    c.p.errors = 0
+                                    limiter.noteSuccess(c.p.id)
+                                    latestRoute = c.m.modelId + "@" + c.p.id
+                                    GateLog.attempt(
+                                        reqId, c.p.id, modelId, true,
+                                        (System.currentTimeMillis() - at).toDouble(),
+                                        retryCode, null
+                                    )
+                                    relay(output, retryConn, stream)
+                                    GateLog.requestEnd(
+                                        reqId, true, c.p.id,
+                                        (System.currentTimeMillis() - reqStart).toDouble(),
+                                        c.why + listOf("auto_fix:" + fixDesc)
+                                    )
+                                    totalOk++
+                                    return
+                                } else {
+                                    try { retryConn.disconnect() } catch (_: Exception) {}
+                                }
+                            }
+                        }
+                    }
+
                     GateLog.attempt(reqId, c.p.id, modelId, false, latency, code, errBody?.take(200))
                     lastErr = "http_$code"
                     conn.disconnect()
