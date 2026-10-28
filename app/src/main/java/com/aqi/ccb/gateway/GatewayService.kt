@@ -54,6 +54,21 @@ class GatewayService : Service() {
         var running: Boolean = false
             private set
 
+        /**
+         * 日志目录的「预设值」。
+         * Activity 在 onCreate 时写入，服务启动时读取填充 diag.logDir。
+         * 加这个是因为 onStartCommand 可能先于 Activity 完成初始化，
+         * 直接调 current?.setLogDir() 时 current 还是 null。
+         */
+        @Volatile
+        var pendingLogDir: String = ""
+            private set
+
+        fun setPendingLogDir(path: String) {
+            pendingLogDir = path
+            current?.setLogDir(path)
+        }
+
         private val listeners = java.util.concurrent.CopyOnWriteArrayList<StateListener>()
         private var lastPort = 0
         private var lastError: String? = null
@@ -142,7 +157,8 @@ class GatewayService : Service() {
         val limiter = RateLimiter(policies, RatePolicy())
 
         val srv = GatewayServer(port, providers, rules, limiter, "", vmodels)
-        srv.logDirPath = lastLogDir
+        // 优先用 Activity 预设值，其次用本服务缓存
+        srv.logDirPath = if (pendingLogDir.isNotEmpty()) pendingLogDir else lastLogDir
         srv.configDirPath = filesDir.absolutePath
 
         val ok = try {
