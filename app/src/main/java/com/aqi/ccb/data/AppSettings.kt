@@ -239,12 +239,37 @@ class McpBridge(private val context: Context) : McpConfig {
         }
     }
 
+    /**
+     * 读系统日志。
+     *
+     * 修复：原来读 filesDir（内部），但 GateLog 实际写到
+     * getExternalFilesDir（外部，供 shell 读取）——路径不符导致
+     * 通过 MCP 永远拿到 {"log":"(empty)"}。
+     * 现在优先读外部目录，回退内部（兼容旧装）。
+     */
     override fun readLog(lines: Int): String = try {
-        val f = File(context.filesDir, "logs/system/gateway.log")
-        if (!f.exists()) """{"log":"(empty)"}"""
-        else JSONObject().apply {
-            put("lines", JSONArray(f.readLines().takeLast(lines.coerceIn(1, 500))))
-        }.toString(2)
+        val n = lines.coerceIn(1, 500)
+        val extBase = try {
+            context.getExternalFilesDir(null) ?: context.filesDir
+        } catch (_: Exception) {
+            context.filesDir
+        }
+        val candidates = listOf(
+            File(extBase, "logs/system/gateway.log"),
+            File(context.filesDir, "logs/system/gateway.log"),
+        )
+        val f = candidates.firstOrNull { it.exists() && it.length() > 0 }
+        if (f == null) {
+            JSONObject().apply {
+                put("log", "(empty)")
+                put("searched", JSONArray(candidates.map { it.absolutePath }))
+            }.toString(2)
+        } else {
+            JSONObject().apply {
+                put("file", f.absolutePath)
+                put("lines", JSONArray(f.readLines().takeLast(n)))
+            }.toString(2)
+        }
     } catch (e: Exception) {
         """{"error":"${e.message}"}"""
     }
