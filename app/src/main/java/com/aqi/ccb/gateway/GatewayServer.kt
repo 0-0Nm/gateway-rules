@@ -657,6 +657,11 @@ class GatewayServer(
         // 共享 WakeLock 状态：两个服务共用一把物理锁，ref 应为 2 而非各自一把
         sb.append(",\"wakeRef\":").append(WakeLockHolder.refCountPublic())
         sb.append(",\"wakeHeld\":").append(WakeLockHolder.isHeldPublic())
+        // 看门狗持有者：两个服务各自持有，全部退出才会停
+        val wdHolders = FloatingBall.watchdogHoldersPublic()
+        sb.append(",\"watchdogHolders\":\"")
+            .append(esc(wdHolders.joinToString(","))).append("\"")
+        sb.append(",\"watchdogCount\":").append(wdHolders.size)
         sb.append("}")
         // 限流实时
         sb.append(",\"rate\":[")
