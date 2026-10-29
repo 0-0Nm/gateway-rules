@@ -185,7 +185,7 @@ class GatewayService : Service() {
             if (FloatingBall.ensureAttached(this)) {
                 FloatingBall.refreshFromProviders()
             }
-            FloatingBall.startWatchdog(this, 30_000L)
+            FloatingBall.startWatchdog(this, 30_000L, owner = "gw")
         }.onFailure { GateLog.warn("float", "gw ensureAttached failed: ${it.message}") }
 
         return START_STICKY
@@ -197,6 +197,9 @@ class GatewayService : Service() {
         current = null
         notifyState(false, 0, lastError)
         releaseWakeLock()
+        // 释放看门狗持有权：只移除自己那份，
+        // 若 McpService 还在跑，看门狗继续为其工作。
+        runCatching { FloatingBall.stopWatchdog("gw") }
         super.onDestroy()
     }
 
