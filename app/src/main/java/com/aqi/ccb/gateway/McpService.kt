@@ -160,7 +160,7 @@ class McpService : Service() {
                 FloatingBall.refreshFromProviders()
             }
             // 看门狗：周期核对窗口是否真的在屏幕上，并刷新状态文字
-            FloatingBall.startWatchdog(this, 30_000L)
+            FloatingBall.startWatchdog(this, 30_000L, owner = "mcp")
         }.onFailure { GateLog.warn("float", "service ensureAttached failed: ${it.message}") }
 
         return START_STICKY
@@ -172,6 +172,9 @@ class McpService : Service() {
         current = null
         notifyState(false, "", 0)
         releaseWakeLock()
+        // 释放看门狗持有权：只移除自己那份，
+        // 若 GatewayService 还在跑，看门狗继续为其工作。
+        runCatching { FloatingBall.stopWatchdog("mcp") }
         super.onDestroy()
     }
 
