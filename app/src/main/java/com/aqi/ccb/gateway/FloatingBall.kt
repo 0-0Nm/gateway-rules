@@ -317,19 +317,35 @@ object FloatingBall {
                 if (dragging) {
                     selfP.x = startX + dx.toInt()
                     selfP.y = startY + dy.toInt()
-                    try { wm?.updateViewLayout(v, selfP) } catch (_: Exception) {}
+                    try {
+                        wm?.updateViewLayout(v, selfP)
+                    } catch (e: Exception) {
+                        // 拖动更新失败 = 用户看到的「拖不动」。
+                        // 原来完全静默，无法诊断；加限流日志（5 秒一次）避免拖动时刷屏。
+                        logDragFailure("self", e)
+                    }
 
                     // 另一球跟随：主球动则卫星=主球+偏移；卫星动则主球=卫星-偏移
                     if (isSatellite) {
                         otherP.x = selfP.x - gapX
                         otherP.y = selfP.y - gapY
-                        try { wm?.updateViewLayout(mainView ?: return@OnTouchListener true, otherP) }
-                        catch (_: Exception) {}
+                        try {
+                            wm?.updateViewLayout(
+                                mainView ?: return@OnTouchListener true, otherP
+                            )
+                        } catch (e: Exception) {
+                            logDragFailure("main-follow", e)
+                        }
                     } else {
                         otherP.x = selfP.x + gapX
                         otherP.y = selfP.y + gapY
-                        try { wm?.updateViewLayout(satView ?: return@OnTouchListener true, otherP) }
-                        catch (_: Exception) {}
+                        try {
+                            wm?.updateViewLayout(
+                                satView ?: return@OnTouchListener true, otherP
+                            )
+                        } catch (e: Exception) {
+                            logDragFailure("sat-follow", e)
+                        }
                     }
                 }
                 true
@@ -415,8 +431,21 @@ object FloatingBall {
     fun isLocked(): Boolean = locked
 
     fun detach() {
-        try { mainView?.let { wm?.removeView(it) } } catch (_: Exception) {}
-        try { satView?.let { wm?.removeView(it) } } catch (_: Exception) {}
+        // removeView 失败会造成「孤儿窗口」：代码里引用清了、球还在屏幕上，
+        // 下次 attach 又会新建一对 -> 屏幕上出现重复球。
+        // 原来完全静默，现在至少留一条日志。
+        try {
+            mainView?.let { wm?.removeView(it) }
+        } catch (e: Exception) {
+            GateLog.warn("float", "detach main removeView failed: " +
+                (e.message ?: e::class.java.simpleName))
+        }
+        try {
+            satView?.let { wm?.removeView(it) }
+        } catch (e: Exception) {
+            GateLog.warn("float", "detach sat removeView failed: " +
+                (e.message ?: e::class.java.simpleName))
+        }
         mainView = null
         satView = null
         wm = null
@@ -436,18 +465,45 @@ object FloatingBall {
     private var watchdogCtx: Context? = null
 
     /**
+     * 看门狗持有者集合。
+     *
+     * 为什么需要：McpService 和 GatewayService 都会 startWatchdog，
+     * 但原来任一方 stop 都会把整个看门狗停掉，导致另一方失去自愈能力；
+     * 而且两个服务的 onDestroy 压根没停看门狗，进程存活时会残留定时器。
+     * 用持有者集合：谁启动谁负责停，全部停了才真正取消定时任务。
+     */
+    private val watchdogHolders = HashSet<String>()
+
+    /** 当前看门狗启动者（供 diag 观察） */
+    fun watchdogHoldersPublic(): List<String> = watchdogHolders.toList()
+
+    /**
      * 启动悬浮球看门狗。
      *
      * 解决的问题：vivo 等 ROM 会 cgroup 冻结进程，解冻后 overlay 图层
      * 可能已被 WindowManager 清理，而进程内引用仍非 null——
      * 导致「以为挂着，其实没画面」。看门狗定期核对真实窗口状态并补挂。
      *
-     * 只在 Service 里启动（进程级），Activity 不参与，避免双重定时器。
+     * @param owner 启动者标识（如 "mcp" / "gw"）。同一 owner 重复调用不会重复计时。
      */
-    fun startWatchdog(context: Context, intervalMs: Long = 30_000L) {
-        stopWatchdog()
+    fun startWatchdog(
+        context: Context,
+        intervalMs: Long = 30_000L,
+        owner: String = "default",
+    ) {
         val app = context.applicationContext
         watchdogCtx = app
+        synchronized(watchdogHolders) {
+            val isFirst = watchdogHolders.isEmpty()
+            watchdogHolders.add(owner)
+            if (!isFirst && watchdog != null) {
+                GateLog.info("float", "watchdog shared by " + owner +
+                    " holders=" + watchdogHolders.joinToString(","))
+                return
+            }
+        }
+        // 首个启动者才真正建立定时任务
+        watchdog?.let { main.removeCallbacks(it) }
         val r = object : Runnable {
             override fun run() {
                 runCatching { verifyAndHeal(app) }
@@ -456,10 +512,35 @@ object FloatingBall {
         }
         watchdog = r
         main.postDelayed(r, intervalMs)
-        GateLog.info("float", "watchdog started interval=${intervalMs}ms")
+        GateLog.info("float", "watchdog started by " + owner +
+            " interval=" + intervalMs + "ms")
     }
 
-    fun stopWatchdog() {
+    /**
+     * 释放看门狗。
+     *
+     * 有 owner 时只移除该持有者，全部退出才真正停；
+     * 无参调用（兼容旧代码）等价于强制全停。
+     */
+    fun stopWatchdog(owner: String? = null) {
+        if (owner != null) {
+            val empty: Boolean
+            synchronized(watchdogHolders) {
+                if (!watchdogHolders.remove(owner)) {
+                    GateLog.info("float", "watchdog stop ignored by " + owner +
+                        " (not a holder)")
+                    return
+                }
+                empty = watchdogHolders.isEmpty()
+            }
+            if (!empty) {
+                GateLog.info("float", "watchdog held by others, released by " +
+                    owner + " holders=" + watchdogHolders.joinToString(","))
+                return
+            }
+        } else {
+            synchronized(watchdogHolders) { watchdogHolders.clear() }
+        }
         watchdog?.let { main.removeCallbacks(it) }
         watchdog = null
         GateLog.info("float", "watchdog stopped")
@@ -500,6 +581,24 @@ object FloatingBall {
      * 有些 ROM 的 canDrawOverlays() 会假阴性，但只要球能挂上就说明权限确实有效。
      */
     fun isMounted(): Boolean = isViewAttached(mainView)
+
+    // ---- 拖动失败日志限流 ----
+    // 拖动是高频动作（每帧都 layout），失败时若每帧打日志会把文件刷爆。
+    // 5 秒窗口内同一来源只记一次，既保留可诊断性又不淹没日志。
+    private var lastDragLogMs = 0L
+    private var dragFailCount = 0
+
+    private fun logDragFailure(where: String, e: Exception) {
+        dragFailCount++
+        val now = System.currentTimeMillis()
+        if (now - lastDragLogMs < 5_000L) return
+        lastDragLogMs = now
+        GateLog.warn(
+            "float",
+            "drag layout failed at " + where + " (total " + dragFailCount + "): " +
+                (e.message ?: e::class.java.simpleName)
+        )
+    }
 
     /** 判断 View 是否真的挂在窗口上 */
     private fun isViewAttached(v: android.view.View?): Boolean {
