@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 自适应图标背景色：实测原图外沿主色 RGB(213,213,213)，与前景衔接不突兀 -->
+    <color name="ic_launcher_background">#D5D5D5</color>
+</resources>
