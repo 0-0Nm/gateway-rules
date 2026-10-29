@@ -1,7 +1,6 @@
 package com.aqi.ccb.gateway
 
 import java.io.BufferedInputStream
-import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
@@ -537,40 +536,12 @@ class GatewayServer(
     }
 
     // ==================== HTTP 工具 ====================
-    private fun readHeader(input: InputStream): String? {
-        val sb = StringBuilder()
-        var prev = -1
-        while (true) {
-            val b = input.read()
-            if (b < 0) return if (sb.isEmpty()) null else sb.toString()
-            sb.append(b.toChar())
-            if (prev == '\r'.code && b == '\n'.code) {
-                val s = sb.toString()
-                if (s.endsWith("\r\n\r\n")) return s.dropLast(2)
-            }
-            prev = b
-            if (sb.length > 32768) return null
-        }
-    }
+    // readHeader / readExactly 已抽到 SocketIo（原与 McpServer 各实现一份，逻辑相同）
+    private fun readHeader(input: InputStream): String? = SocketIo.readHeader(input)
 
-    private fun readExactly(input: InputStream, len: Int): ByteArray {
-        val out = ByteArrayOutputStream(len)
-        val buf = ByteArray(4096)
-        var remaining = len
-        while (remaining > 0) {
-            val n = input.read(buf, 0, minOf(buf.size, remaining))
-            if (n <= 0) break
-            out.write(buf, 0, n)
-            remaining -= n
-        }
-        return out.toByteArray()
-    }
+    private fun readExactly(input: InputStream, len: Int): ByteArray =
+        SocketIo.readExactly(input, len)
 
-    /**
-     * 统一失败出口：计数 + 记录原因 + 分类 + 写响应。
-     * 之前 6 处失败路径各写各的，诊断面板只看到其中一处，
-     * 导致"失败 1 次但原因空白"——这是真缺口。
-     */
     /**
      * 统一失败出口。
      * @param countAsUpstreamFail true=计入 totalFail（上游问题）
