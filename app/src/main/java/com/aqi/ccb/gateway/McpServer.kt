@@ -3,7 +3,6 @@ package com.aqi.ccb.gateway
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
-import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -380,33 +379,11 @@ class McpServer(
             })
         }.toString()
 
-    private fun readHeader(input: InputStream): String? {
-        val sb = StringBuilder()
-        var prev = -1
-        while (true) {
-            val b = input.read()
-            if (b < 0) return if (sb.isEmpty()) null else sb.toString()
-            sb.append(b.toChar())
-            if (prev == '\r'.code && b == '\n'.code) {
-                if (sb.toString().endsWith("\r\n\r\n")) return sb.toString().dropLast(2)
-            }
-            prev = b
-            if (sb.length > 32768) return null
-        }
-    }
+    // readHeader / readExactly 已抽到 SocketIo（原与 GatewayServer 各实现一份）
+    private fun readHeader(input: InputStream): String? = SocketIo.readHeader(input)
 
-    private fun readExactly(input: InputStream, len: Int): ByteArray {
-        val out = ByteArrayOutputStream(len)
-        val buf = ByteArray(4096)
-        var remaining = len
-        while (remaining > 0) {
-            val n = input.read(buf, 0, minOf(buf.size, remaining))
-            if (n <= 0) break
-            out.write(buf, 0, n)
-            remaining -= n
-        }
-        return out.toByteArray()
-    }
+    private fun readExactly(input: InputStream, len: Int): ByteArray =
+        SocketIo.readExactly(input, len)
 
     private fun writeJson(output: OutputStream, code: Int, json: String) {
         writeResp(output, code, json)
