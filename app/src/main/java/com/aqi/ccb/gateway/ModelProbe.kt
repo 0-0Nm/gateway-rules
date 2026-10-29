@@ -154,6 +154,10 @@ object ModelProbe {
 
     // ---------- HTTP ----------
 
+    /**
+     * 建立连接但**不**立即读取/断开，供流式测试边读边判断。
+     * 与 HttpUtil 的区别：那边是一次性请求，读完即 disconnect。
+     */
     private fun open(url: String, key: String, body: String, timeoutMs: Int): HttpURLConnection {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
@@ -167,16 +171,17 @@ object ModelProbe {
         return conn
     }
 
+    /**
+     * 一次性 POST（非流式）。
+     * 注：流式测试仍需用 open() 自己管连接生命周期，
+     * 因为要边读边判断是否收到 data: 行，不能一次性读完就断。
+     */
     private fun post(url: String, key: String, body: String, timeoutMs: Int): Pair<Int, String> {
-        val conn = open(url, key, body, timeoutMs)
-        val code = conn.responseCode
-        val text = try {
-            val ins = if (code in 200..299) conn.inputStream else conn.errorStream
-            ins?.readBytes()?.toString(Charsets.UTF_8) ?: ""
-        } catch (e: Exception) {
-            ""
-        }
-        try { conn.disconnect() } catch (_: Exception) {}
-        return code to text
+        val r = HttpUtil.postJson(
+            url, key, body, timeoutMs,
+            accept = "text/event-stream, application/json",
+        )
+        if (r.error != null) return -1 to r.error
+        return r.code to r.body
     }
 }
