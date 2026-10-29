@@ -1,8 +1,6 @@
 package com.aqi.ccb.gateway
 
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * baseUrl 后缀自动探测 —— 在 rikka 路径规范化基础上再加「真发请求验证」。
@@ -122,65 +120,30 @@ object BaseUrlProbe {
 
     /** 返回 (模型数, 结果摘要)；模型数 0 表示失败 */
     private fun tryFetchModels(baseUrl: String, apiKey: String, timeoutMs: Int): Pair<Int, String> {
-        return try {
-            val conn = URL("$baseUrl/models").openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = timeoutMs
-            conn.readTimeout = timeoutMs
-            conn.setRequestProperty("Accept", "application/json")
-            if (apiKey.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
-            val code = conn.responseCode
-            if (code !in 200..299) {
-                try { conn.disconnect() } catch (_: Exception) {}
-                return 0 to "http_$code"
-            }
-            val body = conn.inputStream.readBytes().toString(Charsets.UTF_8)
-            try { conn.disconnect() } catch (_: Exception) {}
-            val arr = JSONObject(body).optJSONArray("data")
-                ?: JSONObject(body).optJSONArray("models")
-            if (arr == null) return 0 to "无 data 字段"
-            var n = 0
-            for (i in 0 until arr.length()) {
-                val id = arr.optJSONObject(i)?.optString("id")
-                    ?: arr.optJSONObject(i)?.optString("name")
-                if (!id.isNullOrBlank()) n++
-            }
-            if (n == 0) 0 to "模型列表为空" else n to "ok($n)"
-        } catch (e: Exception) {
-            val msg = e.message ?: ""
-            val short = when {
-                msg.contains("ConnectException") || msg.contains("Failed to connect") -> "连接失败"
-                msg.contains("timeout") || msg.contains("timed out") -> "超时"
-                msg.contains("ENOTFOUND") || msg.contains("No address") -> "域名不存在"
-                msg.contains("SSL") || msg.contains("certificate") -> "SSL 错误"
-                else -> msg.take(40)
-            }
-            0 to short
+        val r = HttpUtil.get("$baseUrl/models", apiKey, timeoutMs)
+        if (r.error != null) return 0 to r.error
+        if (!r.ok) return 0 to "http_" + r.code
+        val arr = runCatching { JSONObject(r.body).optJSONArray("data") }
+            .getOrNull()
+            ?: runCatching { JSONObject(r.body).optJSONArray("models") }.getOrNull()
+            ?: return 0 to "无 data 字段"
+        var n = 0
+        for (i in 0 until arr.length()) {
+            val id = arr.optJSONObject(i)?.optString("id")
+                ?: arr.optJSONObject(i)?.optString("name")
+            if (!id.isNullOrBlank()) n++
         }
+        return if (n == 0) 0 to "模型列表为空" else n to "ok(" + n + ")"
     }
 
     /** 只拉模型列表（不探测后缀），供「探测模型」按钮用 */
     fun listModels(baseUrl: String, apiKey: String, timeoutMs: Int = 15000): List<String> {
-        return try {
-            val conn = URL("${baseUrl.trimEnd('/')}/models").openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = timeoutMs
-            conn.readTimeout = timeoutMs
-            conn.setRequestProperty("Accept", "application/json")
-            if (apiKey.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
-            val code = conn.responseCode
-            if (code !in 200..299) {
-                try { conn.disconnect() } catch (_: Exception) {}
-                return emptyList()
-            }
-            val body = conn.inputStream.readBytes().toString(Charsets.UTF_8)
-            try { conn.disconnect() } catch (_: Exception) {}
-            val arr = JSONObject(body).optJSONArray("data") ?: return emptyList()
-            (0 until arr.length()).mapNotNull { i ->
-                arr.optJSONObject(i)?.optString("id")?.takeIf { it.isNotBlank() }
-            }
-        } catch (e: Exception) {
-            emptyList()
+        val r = HttpUtil.get("${baseUrl.trimEnd('/')}/models", apiKey, timeoutMs)
+        if (!r.ok) return emptyList()
+        val arr = runCatching { JSONObject(r.body).optJSONArray("data") }.getOrNull()
+            ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            arr.optJSONObject(i)?.optString("id")?.takeIf { it.isNotBlank() }
         }
     }
 }
