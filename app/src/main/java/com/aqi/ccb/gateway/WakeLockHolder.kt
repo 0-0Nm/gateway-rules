@@ -32,10 +32,27 @@ object WakeLockHolder {
     private var lock: PowerManager.WakeLock? = null
     private var refCount = 0
 
+    /**
+     * 当前持有者集合。
+     *
+     * 为什么必须记名字：单纯整数计数会出现「谁都能减别人」的问题。
+     * 实测踩过：gw 先 acquire（ref=1），随后 mcp 服务被 stop 时调用
+     * release("mcp")——但 mcp 从未 acquire 过——计数被减到 0，
+     * 物理锁被释放，导致仍在运行的 gw 失去锁保护。
+     * 用集合记录谁真正持有，release 只认自己那份。
+     */
+    private val holders = HashSet<String>()
+
     /** 增加引用；首次调用时真正 acquire */
     @Synchronized
     fun acquire(ctx: Context, who: String) {
-        refCount += 1
+        if (!holders.add(who)) {
+            // 同一持有者重复 acquire，不重复计数
+            GateLog.info("wake", "wake lock already held by " + who +
+                " ref=" + refCount)
+            return
+        }
+        refCount = holders.size
         if (lock == null) {
             try {
                 val pm = ctx.applicationContext
@@ -44,22 +61,30 @@ object WakeLockHolder {
                     setReferenceCounted(false)
                     acquire(TIMEOUT_MS)
                 }
-                GateLog.info("wake", "wake lock acquired by " + who + " ref=1")
+                GateLog.info("wake", "wake lock acquired by " + who +
+                    " ref=" + refCount)
             } catch (e: Exception) {
                 GateLog.warn("wake", "wake lock failed: " + e.message)
                 lock = null
+                holders.remove(who)
+                refCount = holders.size
             }
         } else {
             GateLog.info("wake", "wake lock shared by " + who + " ref=" + refCount)
         }
     }
 
-    /** 减少引用；归零时真正 release */
+    /** 减少引用；仅当自己确实持有时才减，归零才真正 release */
     @Synchronized
     fun release(who: String) {
-        if (refCount > 0) refCount -= 1
+        if (!holders.remove(who)) {
+            // 没持有过（如服务启动失败就 onDestroy），不碰别人的计数
+            GateLog.info("wake", "release ignored by " + who +
+                " (not a holder) ref=" + refCount)
+            return
+        }
+        refCount = holders.size
         if (refCount <= 0) {
-            refCount = 0
             try {
                 lock?.let { if (it.isHeld) it.release() }
             } catch (_: Exception) {}
@@ -68,8 +93,8 @@ object WakeLockHolder {
             }
             lock = null
         } else {
-            GateLog.info("wake", "wake lock held by others, released by " + who +
-                " ref=" + refCount)
+            GateLog.info("wake", "wake lock held by " + holders.joinToString(",") +
+                ", released by " + who + " ref=" + refCount)
         }
     }
 
