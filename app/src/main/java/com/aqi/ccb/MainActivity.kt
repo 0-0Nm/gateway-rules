@@ -102,21 +102,16 @@ class MainActivity : ComponentActivity() {
 
     // ---- 设置页可观察状态（关键：不能用 AppSettings 每次重组新建快照，
     //      否则受控输入框 value 会回滚导致打不进字，开关也不生效）----
-    // 初始值必须与持久化配置同源，不能硬编码。
-    //
-    // 原来这里写死 mcpEnabled=false，而 AppSettings.mcpEnabled() 默认是 true，
-    // 首次安装启动（还没有 prefs 文件）时两者冲突：
-    //   开关显示「关」   <- 读这里的硬编码 false
-    //   MCP 实际启动     <- startMcpIfEnabled() 读 AppSettings 的 true
-    //   悬浮球显示 MA    <- 读 McpService.current.isRunning() 的真实值
-    // ⚠ 重要：字段初始化器运行在 Activity 构造函数阶段，
-    // 此时 attachBaseContext() 还没执行，this 作为 Context 是未绑定的，
-    // 任何 getSharedPreferences() 都会抛 NullPointerException。
-    // （曾经因此崩过一次：AppSettings.gatewayPort(this) 在 <init> 里被调用）
-    //
-    // 所以这里只能用无 Context 的默认值，真正配置在 onCreate 里由
-    // syncConfigToUi() 覆盖 —— 那时 this 已可用。
-    private var settingsState by mutableStateOf(com.aqi.ccb.ui.SettingsState())
+    private var settingsState by mutableStateOf(
+        com.aqi.ccb.ui.SettingsState(
+            gatewayPort = "38080",
+            floatEnabled = true,
+            mcpEnabled = false,
+            mcpPort = "38081",
+            toastEnabled = true,
+            mcpRunning = false,
+        )
+    )
 
     // ---- 聚合页状态 ----
     private var mainState by mutableStateOf(MainUiState())
@@ -164,12 +159,6 @@ class MainActivity : ComponentActivity() {
         // 绑定悬浮球的状态提供者：球上显示的 MCP / 网关状态
         // 一律实时向服务询问，不用缓存 —— 这修掉「MCP 没开却显示 MA」。
         com.aqi.ccb.gateway.FloatingBallState.bind()
-
-        // 立即把持久化配置灌进 UI 状态。
-        // 必须在 setContent 之前 —— 否则首次渲染用的是 data class 默认值
-        // （38080 / MCP 关闭），与真实配置不符，会闪一下再纠正。
-        // 此时 this 已作为 Context 绑定，可以安全读 SharedPreferences。
-        syncConfigToUi()
 
         setContent {
             AppTheme {
@@ -588,17 +577,9 @@ class MainActivity : ComponentActivity() {
     private fun thawCheck() {
         val port = mainState.port.toIntOrNull() ?: 38080
         Thread {
-            val alive = try {
-                val c = java.net.URL("http://127.0.0.1:$port/health")
-                    .openConnection() as java.net.HttpURLConnection
-                c.connectTimeout = 1500
-                c.readTimeout = 1500
-                val code = c.responseCode
-                try { c.disconnect() } catch (_: Exception) {}
-                code in 200..299
-            } catch (e: Exception) {
-                false
-            }
+            val alive = com.aqi.ccb.gateway.HttpUtil
+                .get("http://127.0.0.1:$port/health", timeoutMs = 1500)
+                .ok
             if (!alive && AppSettings.gatewayPort(this) > 0) {
                 GateLog.warn("gw", "thaw: gateway unresponsive, restarting service")
                 ui.post {
@@ -657,52 +638,7 @@ class MainActivity : ComponentActivity() {
 
     // ==================== 刷新聚合页 ====================
 
-    /**
-     * 把持久化配置回灌到 UI 状态，保证「设置页 / 主界面 / 服务」三处同源。
-     *
-     * 为什么需要：之前两处 UI 状态各自持有 port / 开关值，
-     * 任何一处被外部改动（MCP 工具、服务重启、用户操作）都不会自动传播，
-     * 表现为「这个页面显示 A，那个页面显示 B」。
-     * 统一在每轮 refresh 时从 AppSettings 回灌。
-     */
-    private fun syncConfigToUi() {
-        val gwPort = AppSettings.gatewayPort(this).toString()
-        val mcpPort = AppSettings.mcpPort(this).toString()
-        val floatOn = AppSettings.floatEnabled(this)
-        val mcpOn = AppSettings.mcpEnabled(this)
-        val toastOn = AppSettings.toastEnabled(this)
-
-        // 主界面端口：
-        //   未运行 -> 显示配置值（准备启动用）
-        //   已运行 -> 显示实际监听端口（以服务为准，避免显示与实监听不符）
-        val runningPort = server?.port?.toString()
-        val shownPort = if (server?.isRunning() == true && runningPort != null) {
-            runningPort
-        } else gwPort
-        if (mainState.port != shownPort) {
-            mainState = mainState.copy(port = shownPort)
-        }
-        // 设置页：仅在草稿未编辑时同步（有未应用改动就别覆盖用户输入）
-        // 加变化判断：refreshMain 每秒被 ticker 调用，无变化时不必重建对象
-        val wantMcpPort = if (settingsState.mcpPortDirty) settingsState.mcpPort else mcpPort
-        if (settingsState.gatewayPort != gwPort ||
-            settingsState.floatEnabled != floatOn ||
-            settingsState.mcpEnabled != mcpOn ||
-            settingsState.toastEnabled != toastOn ||
-            settingsState.mcpPort != wantMcpPort
-        ) {
-            settingsState = settingsState.copy(
-                gatewayPort = gwPort,
-                floatEnabled = floatOn,
-                mcpEnabled = mcpOn,
-                toastEnabled = toastOn,
-                mcpPort = wantMcpPort,
-            )
-        }
-    }
-
     private fun refreshMain() {
-        syncConfigToUi()
         val drafts = ProviderRepo.list(this)
         val ruleJsons = ConfigStore.loadRules(this)
 
@@ -1044,21 +980,13 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
+    /** 拉 /models 列表，返回换行分隔的模型 ID；失败返回 "ERR:..." */
     private fun fetchModelIds(base: String, key: String): String {
-        val conn = java.net.URL("$base/models").openConnection() as java.net.HttpURLConnection
-        conn.requestMethod = "GET"
-        conn.connectTimeout = 15000
-        conn.readTimeout = 20000
-        conn.setRequestProperty("Accept", "application/json")
-        if (key.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $key")
-        val code = conn.responseCode
-        if (code !in 200..299) {
-            conn.disconnect()
-            return "ERR:http_$code"
-        }
-        val body = conn.inputStream.readBytes().toString(Charsets.UTF_8)
-        conn.disconnect()
-        val arr = JSONObject(body).optJSONArray("data") ?: return "ERR:no data field"
+        val r = com.aqi.ccb.gateway.HttpUtil.get("$base/models", key, 20_000)
+        if (r.error != null) return "ERR:" + r.error
+        if (!r.ok) return "ERR:http_" + r.code
+        val arr = runCatching { JSONObject(r.body).optJSONArray("data") }.getOrNull()
+            ?: return "ERR:no data field"
         val sb = StringBuilder()
         for (i in 0 until arr.length()) {
             val id = arr.optJSONObject(i)?.optString("id")
