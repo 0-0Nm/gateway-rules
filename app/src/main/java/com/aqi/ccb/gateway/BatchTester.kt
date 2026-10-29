@@ -1,8 +1,6 @@
 package com.aqi.ccb.gateway
 
 import com.aqi.ccb.data.ModelInfo
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -91,59 +89,28 @@ object BatchTester {
 
     /** 返回 0 = 成功；否则 HTTP 码或 -1 */
     private fun tryGetModel(base: String, key: String, modelId: String, timeoutMs: Int): Int {
-        return try {
-            val conn = URL("$base/models/$modelId").openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = timeoutMs
-            conn.readTimeout = timeoutMs
-            if (key.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $key")
-            val code = conn.responseCode
-            try { conn.disconnect() } catch (_: Exception) {}
-            if (code in 200..299) 0 else code
-        } catch (e: Exception) {
-            -1
+        val r = HttpUtil.get("$base/models/$modelId", key, timeoutMs)
+        return when {
+            r.error != null -> -1
+            r.ok -> 0
+            else -> r.code
         }
     }
 
     private fun tryMinimalChat(base: String, key: String, modelId: String, timeoutMs: Int): Pair<Boolean, String> {
-        return try {
-            val conn = URL("$base/chat/completions").openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.connectTimeout = timeoutMs
-            conn.readTimeout = timeoutMs
-            conn.setRequestProperty("Content-Type", "application/json")
-            if (key.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $key")
-            val body = """{"model":"$modelId","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}"""
-            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            val code = conn.responseCode
-            val text = try {
-                val ins = if (code in 200..299) conn.inputStream else conn.errorStream
-                ins?.readBytes()?.toString(Charsets.UTF_8) ?: ""
-            } catch (e: Exception) { "" }
-            try { conn.disconnect() } catch (_: Exception) {}
-            if (code in 200..299 && (text.contains("choices") || text.contains("content"))) {
-                true to ""
-            } else {
-                val brief = when {
-                    code == 401 || code == 403 -> "鉴权失败($code)"
-                    code == 404 -> "模型不存在(404)"
-                    code == 429 -> "限流(429)"
-                    code >= 500 -> "服务端错误($code)"
-                    else -> "http_$code ${text.take(60)}"
-                }
-                false to brief
-            }
-        } catch (e: Exception) {
-            val m = e.message ?: ""
-            val brief = when {
-                m.contains("timeout") || m.contains("timed out") -> "超时"
-                m.contains("Connect") || m.contains("connect") -> "连接失败"
-                m.contains("ENOTFOUND") -> "域名不存在"
-                m.contains("SSL") -> "SSL 错误"
-                else -> m.take(40)
-            }
-            false to brief
+        val body = """{"model":"$modelId","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}"""
+        val r = HttpUtil.postJson("$base/chat/completions", key, body, timeoutMs)
+        if (r.error != null) return false to r.error
+        if (r.ok && (r.body.contains("choices") || r.body.contains("content"))) {
+            return true to ""
         }
+        val brief = when {
+            r.code == 401 || r.code == 403 -> "鉴权失败(" + r.code + ")"
+            r.code == 404 -> "模型不存在(404)"
+            r.code == 429 -> "限流(429)"
+            r.code >= 500 -> "服务端错误(" + r.code + ")"
+            else -> "http_" + r.code + " " + r.body.take(60)
+        }
+        return false to brief
     }
 }
