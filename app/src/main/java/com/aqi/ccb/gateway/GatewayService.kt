@@ -1,9 +1,6 @@
 package com.aqi.ccb.gateway
 
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -211,40 +208,18 @@ class GatewayService : Service() {
 
     // ---------------- 通知 ----------------
 
+    // 渠道与通知构建已抽到 NotificationHelper（原与 McpService 逐行重复）
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = getSystemService(NotificationManager::class.java)
-            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-                nm.createNotificationChannel(
-                    NotificationChannel(
-                        CHANNEL_ID, "Gateway Service",
-                        NotificationManager.IMPORTANCE_LOW
-                    ).apply { description = "本地网关常驻通知" }
-                )
-            }
-        }
+        NotificationHelper.ensureChannel(
+            this, CHANNEL_ID, "Gateway Service", "本地网关常驻通知"
+        )
     }
 
-    private fun buildNotif(text: String): Notification {
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, CHANNEL_ID)
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
-        }
-        val pi = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, Class.forName("com.aqi.ccb.MainActivity")),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    private fun buildNotif(text: String): Notification =
+        NotificationHelper.build(
+            this, CHANNEL_ID, "GatewayRules 网关", text,
+            android.R.drawable.stat_sys_upload_done,
         )
-        return builder
-            .setContentTitle("GatewayRules 网关")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
-            .setContentIntent(pi)
-            .setOngoing(true)
-            .build()
-    }
 
     // ---------------- WakeLock ----------------
 
