@@ -779,7 +779,8 @@ class GatewayServer(
             s.contains("调用频率")
     }
 
-    private fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"")
+    // 转义已抽到 JsonUtil（原与 GateLog 各一份，且都漏了控制字符）
+    private fun esc(s: String) = JsonUtil.esc(s)
 
     private fun extractJsonString(json: String, key: String): String? {
         val idx = json.indexOf("\"$key\"")
