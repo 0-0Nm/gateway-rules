@@ -3,6 +3,7 @@ package com.aqi.ccb.data
 import android.content.Context
 import com.aqi.ccb.gateway.ConfigStore
 import com.aqi.ccb.gateway.GateLog
+import com.aqi.ccb.gateway.GatewayRuntime
 import com.aqi.ccb.gateway.McpConfig
 import com.aqi.ccb.gateway.Provider
 import com.aqi.ccb.gateway.VirtualModelStore
@@ -254,27 +255,36 @@ class McpBridge(private val context: Context) : McpConfig {
      * 通过 MCP 永远拿到 {"log":"(empty)"}。
      * 现在优先读外部目录，回退内部（兼容旧装）。
      */
-    override fun reloadConfig(): String = try {
-        val providers = ProviderRepo.runtimeProviders(context)
-        val rules = ProviderRepo.runtimeRules(context)
-        val vmodels = VirtualModelStore.load(context)
-        val gw = GatewayService.current
-            ?: return """{"ok":false,"error":"网关未运行，启动后再试"}"""
-        gw.update(providers, rules, vmodels)
-        GateLog.info(
-            "config",
-            "hot reload: providers=" + providers.size +
-                " rules=" + rules.size + " vmodels=" + vmodels.size
-        )
-        JSONObject().apply {
-            put("ok", true)
-            put("providers", providers.size)
-            put("rules", rules.size)
-            put("virtualModels", vmodels.size)
-            put("note", "已热加载，无需重启")
-        }.toString(2)
-    } catch (e: Exception) {
-        """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+    /**
+     * 热加载配置。
+     *
+     * 通过 GatewayRuntime 门面操作，不直接够 GatewayService.current——
+     * 数据层不应依赖具体的 Service 单例，否则网关托管方式一变就要改多处。
+     *
+     * 注意必须用块体（{}）而非表达式体（= try { ... }）：
+     * Kotlin 的表达式体不允许 return。
+     */
+    override fun reloadConfig(): String {
+        return try {
+            val providers = ProviderRepo.runtimeProviders(context)
+            val rules = ProviderRepo.runtimeRules(context)
+            val vmodels = VirtualModelStore.load(context)
+            val applied = GatewayRuntime.applyConfig(providers, rules, vmodels)
+            JSONObject().apply {
+                put("ok", true)
+                put("applied", applied)
+                put("providers", providers.size)
+                put("rules", rules.size)
+                put("virtualModels", vmodels.size)
+                put(
+                    "note",
+                    if (applied) "已热加载，运行中的网关立即生效"
+                    else "配置已保存；网关当前未运行，启动后自动生效"
+                )
+            }.toString(2)
+        } catch (e: Exception) {
+            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+        }
     }
 
     override fun readLog(lines: Int): String = try {
