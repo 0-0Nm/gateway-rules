@@ -60,23 +60,72 @@ object BatchTester {
     }
 
     /** 测单个模型：延迟 + 可用性 */
-    fun testOne(baseUrl: String, apiKey: String, model: ModelInfo, timeoutMs: Int = 15000): ModelInfo {
+    /**
+     * 测试单个模型。
+     *
+     * 修复：原来只写 available / latencyMs / lastError / testedAt，
+     * 从不写 abilities —— 全仓 grep 确认「abilities =」只在反序列化里出现，
+     * 没有任何写入点。后果是规则里的 require(tools) 永远匹配不到，
+     * 因为没有任何模型带 TOOL 能力位。
+     *
+     * 现在两级策略：
+     *   1 GET /models/{id} —— 最省，不动额度。只证明存在，测不出能力。
+     *   2 ModelProbe.probe() —— 三件套（非流式/流式/工具调用），
+     *     结果同时写回 available / latencyMs 与 abilities。
+     *
+     * @param deep true 时强制走三件套（会消耗少量额度，用于首次配置）
+     */
+    fun testOne(
+        baseUrl: String,
+        apiKey: String,
+        model: ModelInfo,
+        timeoutMs: Int = 15000,
+        deep: Boolean = false,
+    ): ModelInfo {
         val base = baseUrl.trimEnd('/')
         val t0 = System.currentTimeMillis()
 
         // ---- 策略 1：GET /models/{id}（最省，不动额度）----
-        val byGet = tryGetModel(base, apiKey, model.modelId, timeoutMs)
-        if (byGet == 0) {
+        if (!deep) {
+            val byGet = tryGetModel(base, apiKey, model.modelId, timeoutMs)
+            if (byGet == 0) {
+                val lat = System.currentTimeMillis() - t0
+                return model.copy(
+                    available = true,
+                    latencyMs = lat,
+                    lastError = "",
+                    testedAt = System.currentTimeMillis(),
+                )
+            }
+        }
+
+        // ---- 策略 2：三件套探测（能测出能力位）----
+        val pr = runCatching {
+            ModelProbe.probe(base, apiKey, model.modelId, timeoutMs)
+        }.getOrNull()
+
+        if (pr != null) {
             val lat = System.currentTimeMillis() - t0
+            // 能力位：工具调用通过才给 TOOL
+            val abs = mutableListOf<String>()
+            if (pr.toolCall) abs.add("TOOL")
+            // 推理型模型无法自动判定，保留用户手填的 REASONING
+            if (model.abilities.contains("REASONING")) abs.add("REASONING")
+            if (model.abilities.contains("VISION")) abs.add("VISION")
+
             return model.copy(
-                available = true,
-                latencyMs = lat,
-                lastError = "",
+                available = pr.nonStreaming,
+                latencyMs = if (pr.nonStreaming) lat else -1,
+                lastError = pr.error ?: "",
                 testedAt = System.currentTimeMillis(),
+                abilities = abs,
+                nonStreaming = pr.nonStreaming,
+                streaming = pr.streaming,
+                toolCall = pr.toolCall,
             )
         }
 
-        // ---- 策略 2：1-token chat ----
+        // ---- 兜底：1-token chat ----
         val (ok, err) = tryMinimalChat(base, apiKey, model.modelId, timeoutMs)
         val lat = System.currentTimeMillis() - t0
         return model.copy(
