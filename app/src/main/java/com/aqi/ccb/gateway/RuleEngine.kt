@@ -79,9 +79,24 @@ object RuleEngine {
         }
     }
 
+    /**
+     * 配额过滤。
+     *
+     * ⚠ 当前无数据源：Provider.quota 默认 1e9 且没有任何地方从上游余额更新，
+     * 所以这个算子实际上恒通过。保留是为了配置兼容，但每次执行都会记警告，
+     * 避免用户以为它真的在拦。
+     */
     fun opQuotaFilter(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
         val minQ = (a["min_quota"] as? Number)?.toDouble() ?: 0.0
-        return cs.filter { it.p.quota > minQ }
+        val passed = cs.filter { it.p.quota > minQ }
+        if (!ctx.dryRun && passed.size == cs.size && minQ > 0) {
+            GateLog.warn(
+                "rule",
+                "quota_filter 未生效：无余额数据源，quota 恒为默认值，" +
+                    "本次全部通过（min_quota=" + minQ + "）"
+            )
+        }
+        return passed
     }
 
     fun opTierFirst(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
@@ -207,12 +222,28 @@ object RuleEngine {
         }
     }
 
+    /**
+     * 预算上限。
+     *
+     * ⚠ 当前无数据源：Provider.spendToday 恒为 0，从未累加。
+     * 网关是字节级透传，不解析响应体，拿不到 usage；
+     * 即使拿到也需要定价表才能折算成金额。
+     * 保留配置兼容，但执行时记警告。
+     */
     fun opBudgetCap(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
         val maxSpend = (a["max_spend"] as? Number)?.toDouble() ?: return cs
-        return cs.filter {
+        val passed = cs.filter {
             if (it.p.spendToday < maxSpend) true
             else { it.why.add("budget_exceeded"); false }
         }
+        if (!ctx.dryRun && passed.size == cs.size) {
+            GateLog.warn(
+                "rule",
+                "budget_cap 未生效：spendToday 无累加数据源，本次全部通过" +
+                    "（max_spend=" + maxSpend + "）"
+            )
+        }
+        return passed
     }
 
     fun opTake(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
@@ -271,12 +302,53 @@ object RuleEngine {
         providers.filter { it.enabled }
             .mapNotNull { p -> p.models[ctx.modelId]?.let { Cand(p, it) } }
 
+    /**
+     * 「全排序」算子：会重新排列整个候选列表。
+     *
+     * 为什么单独标记：这些算子互相覆盖 ——
+     *   fastest_first 按延迟排完，tier_first 又整个按 tier 重排，
+     *   前一次排序完全失效。用户勾了 3 个排序算子，实际只有最后 1 个起作用，
+     *   属于静默忽略配置（和之前 execute.op 从不被读取是同一类问题）。
+     *
+     * 注意 round_robin / weighted_rr / random 不在此列：
+     *   它们是「挑一个提到首位」，可以叠在排序之后作为二次选择，
+     *   语义上是「先筛出前 N 个，再在其中随机」，有实际意义。
+     */
+    val FULL_SORT_OPS = setOf(
+        "tier_first", "cheapest_first", "fastest_first", "least_errors", "lru",
+    )
+
+    /**
+     * 编排 select 链。
+     *
+     * 对「全排序」算子做互斥处理：只让链中第一个生效，其余跳过并记警告。
+     * 这样既保证行为可预期，又能让用户在日志里看到自己配错了。
+     */
     fun applySelect(cands: List<Cand>, ctx: RequestCtx, steps: List<OpCall>): List<Cand> {
         var cur = cands
+        var sortApplied: String? = null
+        val skipped = mutableListOf<String>()
+
         for (step in steps) {
+            if (step.op in FULL_SORT_OPS) {
+                if (sortApplied != null) {
+                    // 已有排序生效，本次跳过
+                    skipped.add(step.op)
+                    continue
+                }
+                sortApplied = step.op
+            }
             val fn = SELECT_OPS[step.op]
                 ?: error("unknown select operator: ${step.op}; known=${SELECT_OPS.keys.sorted()}")
             cur = fn(cur, ctx, step.args)
+        }
+
+        if (skipped.isNotEmpty()) {
+            GateLog.warn(
+                "rule",
+                "排序算子互斥：已用 " + sortApplied + "，忽略 " +
+                    skipped.joinToString(",") + "（同一条规则里多个排序只有第一个生效）"
+            )
         }
         return cur
     }
