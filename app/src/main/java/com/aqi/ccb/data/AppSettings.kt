@@ -133,11 +133,23 @@ class McpBridge(private val context: Context) : McpConfig {
         if (models.isEmpty()) {
             return """{"ok":false,"error":"端点可用但无模型列表","resolved":"$resolved"}"""
         }
+        // ---- 初次筛选 ----
+        // 上游模型不照单全收。
+        //
+        // 按 GREED 的要求：拉到的模型先全部标为「未勾选」，
+        // 用户在本 App 的模型列表里逐个勾选后，才会出现在 /v1/models、
+        // 才参与选路、才可能被调用。
+        //
+        // 为什么不在这一步就探测每个模型的能力（TOOL/REASONING/VISION）：
+        //   实测上游一次返回 104 个模型，逐个探测要发 104 次请求，
+        //   按 30s 超时算可能 10 分钟以上，且会大量消耗额度。
+        //   所以拆成两步：这里只拉清单，能力探测由「探测」按钮按需触发，
+        //   用户可以先勾选少数几个再探测它们。
         val draft = ProviderDraft(
             name = name,
             baseUrl = resolved,
             apiKey = apiKey,
-            models = models.map { ModelInfo(modelId = it) },
+            models = models.map { ModelInfo(modelId = it, enabled = false) },
             suffixStyle = probe.style?.name ?: "AUTO",
         )
         val saved = ProviderRepo.save(context, draft)
@@ -147,6 +159,12 @@ class McpBridge(private val context: Context) : McpConfig {
             put("resolvedBaseUrl", resolved)
             put("style", probe.style?.name ?: "AUTO")
             put("modelCount", models.size)
+            put("enabledCount", 0)
+            put(
+                "note",
+                "已拉取 " + models.size + " 个模型，全部为「未勾选」状态。" +
+                    "请在模型列表中勾选需要使用的模型，勾选后才会出现在 /v1/models 并参与选路。"
+            )
             put("models", JSONArray(models))
         }.toString(2)
     }
