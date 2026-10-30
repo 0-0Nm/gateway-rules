@@ -123,23 +123,47 @@ fun ProviderEditScreen(
                 )
                 formItem(
                     headlineContent = { Text("模型（${draft.models.size} 个）") },
-                    supportingContent = { Text("点下方「探测模型」自动获取，每个模型可单独测试与启停") },
+                    supportingContent = {
+                        Text(
+                            "搜索定位 + 勾选决定去留。未勾选的不会出现在 /v1/models，" +
+                                "也不参与选路。"
+                        )
+                    },
                 ) {
                     if (draft.models.isEmpty()) {
                         Text(
-                            "暂无模型",
+                            "暂无模型，点下方「探测模型」自动获取",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            draft.models.forEach { m ->
-                                ModelRow(
-                                    model = m,
-                                    onToggle = { onToggleModel?.invoke(m.modelId) },
-                                    onUpdate = onUpdateModel,
-                                )
-                            }
+                        // 模型选择器：结构照搬 RikkaHub 的 ModelList
+                        // （搜索框 + 按 provider 分组 + 勾选）
+                        ModelPicker(
+                            providers = listOf(draft),
+                            onToggleModel = { _, modelId, enabled ->
+                                val cur = draft.models.toMutableList()
+                                val i = cur.indexOfFirst { it.modelId == modelId }
+                                if (i >= 0) {
+                                    cur[i] = cur[i].copy(enabled = enabled)
+                                    onDraftChange(draft.copy(models = cur))
+                                }
+                            },
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "展开单个模型可编辑类型/能力/内置工具",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        // 详细的逐模型编辑（三 tab，照搬 ModelFormTab）
+                        draft.models.filter { it.enabled }.forEach { m ->
+                            ModelRow(
+                                model = m,
+                                onToggle = { onToggleModel?.invoke(m.modelId) },
+                                onUpdate = onUpdateModel,
+                            )
                         }
                     }
                 }
