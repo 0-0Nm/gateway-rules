@@ -80,9 +80,15 @@ data class Model(
             type = runCatching {
                 ModelType.valueOf((m["type"] as? String ?: "CHAT").uppercase())
             }.getOrDefault(ModelType.CHAT),
+            // 默认不假设支持任何能力。
+            //
+            // 原来默认 listOf(TOOL) —— 意味着没探测过的模型一律被当作
+            // 支持 tool call，require(tools) 会全部通过，等于该过滤条件失效。
+            // 而 UI 层 ModelInfo.abilities 默认 emptyList()，两边各说各话。
+            // 现在统一为「未探测 = 不声称支持」，要 TOOL 就得先探测确认。
             abilities = (m["abilities"] as? List<*>)?.mapNotNull {
                 runCatching { ModelAbility.valueOf(it.toString().uppercase()) }.getOrNull()
-            } ?: listOf(ModelAbility.TOOL),
+            } ?: emptyList(),
             tools = (m["tools"] as? List<*>)?.mapNotNull {
                 runCatching { BuiltInTool.valueOf(it.toString().uppercase()) }.getOrNull()
             } ?: emptyList(),
