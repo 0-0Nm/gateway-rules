@@ -33,6 +33,15 @@ data class ProviderDraft(
      * 导致所有 provider 权重恒为 1，weighted_rr 退化成均匀随机。
      */
     val weight: String = "1",
+    /**
+     * 余额 / 配额上限。
+     *
+     * 网关 Provider.quota 默认 1e9 且从不更新，
+     * 导致 quota_filter 永远通过（恒大于任何阈值）。
+     * 这里让用户手填一个可用额度，至少能按自己的判断做过滤。
+     * 空字符串表示未填，序列化时不写该字段，网关沿用默认值。
+     */
+    val quota: String = "",
     /** 三件套探测结果摘要（UI 展示用） */
     val probeResult: String = "",
     /** baseUrl 后缀类型：AUTO / OPENAI / GOOGLE / OPENAI_COMPAT / ALIYUN / INPUT */
@@ -65,6 +74,8 @@ data class ProviderDraft(
             put("enabled", enabled)
             put("tier", tier)
             put("weight", weight.toDoubleOrNull() ?: 1.0)
+            // 只有用户填了才写，未填则网关沿用默认（不污染配置）
+            quota.toDoubleOrNull()?.let { put("quota", it) }
             if (apiKey.isNotEmpty()) put("apiKeyRef", "ref-" + idOr())
             put("models", modelsArr)
             put("rateLimit", JSONObject().apply {
@@ -103,6 +114,7 @@ data class ProviderDraft(
                 enabled = o.optBoolean("enabled", true),
                 tier = o.optString("tier", "free"),
                 weight = o.optDouble("weight", 1.0).toString(),
+                quota = if (o.has("quota")) o.optDouble("quota", 0.0).toString() else "",
                 suffixStyle = o.optString("suffixStyle", "AUTO"),
             )
         }
