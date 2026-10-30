@@ -252,7 +252,10 @@ class GatewayServer(
         val ids = LinkedHashSet<String>()
         // 虚拟模型优先（聚合入口）
         ids.addAll(vNames)
-        providers.filter { it.enabled }.forEach { p -> ids.addAll(p.models.keys) }
+        // 只列用户勾选过的模型：初次筛选之外的不对外暴露
+        providers.filter { it.enabled }.forEach { p ->
+            p.models.values.filter { it.enabled }.forEach { ids.add(it.modelId) }
+        }
 
         val data = ids.joinToString(",") { id ->
             val owner = if (id in vNames) "gateway:virtual" else "gateway"
