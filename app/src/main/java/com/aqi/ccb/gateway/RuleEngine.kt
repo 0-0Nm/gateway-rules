@@ -99,15 +99,62 @@ object RuleEngine {
         return passed
     }
 
+    /**
+     * 标签优先 —— 按用户给 provider 手动打的 free/paid 标签排序。
+     *
+     * ⚠ 这不是价格排序。标签是二值且 provider 级的：
+     *   - 同一 provider 下 9 个模型价格差几十倍也无法区分
+     *   - 标签由用户在提供商页选择，与真实账单无关
+     * 要按真实价格排序请用 cheapest_first（需先为模型填单价）。
+     */
     fun opTierFirst(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
         val want = runCatching {
             Tier.valueOf((a["tier"] as? String ?: "free").lowercase())
         }.getOrDefault(Tier.free)
+        val matched = cs.count { it.p.tier == want }
+        if (!ctx.dryRun && (matched == 0 || matched == cs.size)) {
+            GateLog.info(
+                "rule",
+                "tier_first 无区分度：" + matched + "/" + cs.size +
+                    " 个候选是 " + want + " 标签，排序等于原序" +
+                    "（这是手动标签不是价格，按价格排序请用 cheapest_first）"
+            )
+        }
         return cs.sortedBy { if (it.p.tier == want) 0 else 1 }
     }
 
-    fun opCheapestFirst(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> =
-        cs.sortedBy { if (it.p.tier == Tier.free) 0 else 1 }
+    /**
+     * 最省优先 —— 按真实单价排序。
+     *
+     * 原实现是 `sortedBy { if (tier == free) 0 else 1 }`，
+     * 与 tier_first 完全相同，跟「省」没有任何关系，属于命名欺骗。
+     * 现在改为按 Model.blendedPrice（输入+输出单价的均值）升序。
+     *
+     * 排序规则：
+     *   1 填了价格的按价格升序
+     *   2 没填价格的排最后（不能因为没填就说它便宜）
+     *   3 全部没填价 -> 保持原序并记 WARN，不假装排序
+     */
+    fun opCheapestFirst(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
+        val priced = cs.filter { it.m.hasPrice }
+        if (priced.isEmpty()) {
+            if (!ctx.dryRun) {
+                GateLog.warn(
+                    "rule",
+                    "cheapest_first 无价格数据：所有候选模型都没填单价，" +
+                        "保持原序（请在提供商页为模型填写输入/输出价格）"
+                )
+            }
+            return cs
+        }
+        // 有价的优先且按价升序，无价的垫底并保持原相对顺序
+        val withPrice = cs.filter { it.m.hasPrice }
+            .sortedBy { it.m.blendedPrice }
+        val withoutPrice = cs.filter { !it.m.hasPrice }
+        withPrice.forEach { it.why.add("price=%.4f".format(it.m.blendedPrice)) }
+        withoutPrice.forEach { it.why.add("no_price") }
+        return withPrice + withoutPrice
+    }
 
     fun opFastestFirst(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
         cs.forEach { it.why.add("lat=%.0f".format(it.p.latEwma)) }
