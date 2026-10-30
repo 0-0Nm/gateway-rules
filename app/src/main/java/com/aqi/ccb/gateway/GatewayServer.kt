@@ -238,12 +238,32 @@ class GatewayServer(
     }
 
     // ==================== 路由 ====================
+    /**
+     * 返回 /v1/models 列表。
+     *
+     * 修复：原来只遍历 providers，虚拟模型完全不在列表里。
+     * 用户建了虚拟模型并连上网关，却在模型列表看不到 —— 正是这个原因。
+     *
+     * 现在：真实模型（provider 下 enabled 的）+ 虚拟模型（enabled）都列出。
+     * 虚拟模型排在最前，方便客户端优先看到聚合入口。
+     */
     private fun handleModels(output: OutputStream, reqId: String) {
+        val vNames = virtualModels.filter { it.enabled }.map { it.name }
         val ids = LinkedHashSet<String>()
+        // 虚拟模型优先（聚合入口）
+        ids.addAll(vNames)
         providers.filter { it.enabled }.forEach { p -> ids.addAll(p.models.keys) }
-        val data = ids.joinToString(",") { """{"id":"$it","object":"model","owned_by":"gateway"}""" }
+
+        val data = ids.joinToString(",") { id ->
+            val owner = if (id in vNames) "gateway:virtual" else "gateway"
+            """{"id":"$id","object":"model","owned_by":"$owner"}"""
+        }
         writeJson(output, 200, """{"object":"list","data":[$data]}""")
-        GateLog.info("models", "served ${ids.size} models rid=$reqId")
+        GateLog.info(
+            "models",
+            "served " + ids.size + " models (virtual=" + vNames.size +
+                ") rid=" + reqId
+        )
     }
 
     private fun handleChat(output: OutputStream, reqId: String, body: ByteArray) {
