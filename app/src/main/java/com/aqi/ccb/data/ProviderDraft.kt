@@ -26,6 +26,13 @@ data class ProviderDraft(
     val maxInflight: String = "2",
     val enabled: Boolean = true,
     val tier: String = "free",
+    /**
+     * 加权轮换权重。仅 weighted_rr 算子会用到。
+     *
+     * 之前这个值在 toJson 里硬编码为 1，UI 也没有输入框，
+     * 导致所有 provider 权重恒为 1，weighted_rr 退化成均匀随机。
+     */
+    val weight: String = "1",
     /** 三件套探测结果摘要（UI 展示用） */
     val probeResult: String = "",
     /** baseUrl 后缀类型：AUTO / OPENAI / GOOGLE / OPENAI_COMPAT / ALIYUN / INPUT */
@@ -57,7 +64,7 @@ data class ProviderDraft(
             put("baseUrl", baseUrl)
             put("enabled", enabled)
             put("tier", tier)
-            put("weight", 1)
+            put("weight", weight.toDoubleOrNull() ?: 1.0)
             if (apiKey.isNotEmpty()) put("apiKeyRef", "ref-" + idOr())
             put("models", modelsArr)
             put("rateLimit", JSONObject().apply {
@@ -95,6 +102,7 @@ data class ProviderDraft(
                 maxInflight = (rl?.optInt("maxInflight", 2) ?: 2).toString(),
                 enabled = o.optBoolean("enabled", true),
                 tier = o.optString("tier", "free"),
+                weight = o.optDouble("weight", 1.0).toString(),
                 suffixStyle = o.optString("suffixStyle", "AUTO"),
             )
         }
