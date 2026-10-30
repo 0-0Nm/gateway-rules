@@ -55,7 +55,18 @@ data class Model(
      */
     val priceInPerM: Double = 0.0,
     /** 输出价格（每百万 token）；0=未填 */
-    val priceOutPerM: Double = 0.0
+    val priceOutPerM: Double = 0.0,
+    /**
+     * 用户在本 App 的「初次筛选」里是否勾选。
+     *
+     * 语义（按 GREED 澄清）：
+     *   App 模型列表 -> 展示上游全部模型及其支持的调用形式（一次性拉全）
+     *   enabled      -> 只是「我们可能会调用它」的标记
+     *   /v1/models   -> 只列 enabled 的（这才是对外真正可用的）
+     *   选路         -> 只用 enabled 的
+     * 默认 true 兼容旧配置。
+     */
+    val enabled: Boolean = true
 ) {
     /** 是否填了价格（任一非 0 即算） */
     val hasPrice: Boolean get() = priceInPerM > 0 || priceOutPerM > 0
@@ -77,7 +88,9 @@ data class Model(
             } ?: emptyList(),
             contextLength = (m["contextLength"] as? Number)?.toInt() ?: 128_000,
             priceInPerM = (m["priceInPerM"] as? Number)?.toDouble() ?: 0.0,
-            priceOutPerM = (m["priceOutPerM"] as? Number)?.toDouble() ?: 0.0
+            priceOutPerM = (m["priceOutPerM"] as? Number)?.toDouble() ?: 0.0,
+            // 必须读：否则 UI 勾选对网关完全无效
+            enabled = m["enabled"] as? Boolean ?: true
         )
     }
 }
