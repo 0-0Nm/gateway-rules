@@ -345,9 +345,20 @@ object RuleEngine {
 
     // ==================== 编排 ====================
 
+    /**
+     * 按请求的 modelId 构建候选。
+     *
+     * 两道闸：provider.enabled 且 model.enabled。
+     * 原来只过滤 provider —— Model.fromJson 压根不读 enabled，
+     * 用户在初次筛选里取消勾选的模型照样会被选中转发。
+     */
     fun buildCands(providers: List<Provider>, ctx: RequestCtx): List<Cand> =
         providers.filter { it.enabled }
-            .mapNotNull { p -> p.models[ctx.modelId]?.let { Cand(p, it) } }
+            .mapNotNull { p ->
+                p.models[ctx.modelId]
+                    ?.takeIf { it.enabled }
+                    ?.let { Cand(p, it) }
+            }
 
     /**
      * 「全排序」算子：会重新排列整个候选列表。
