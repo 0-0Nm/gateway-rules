@@ -37,11 +37,27 @@ data class Model(
     val modelId: String,
     val displayName: String = "",
     val type: ModelType = ModelType.CHAT,
-    val abilities: List<ModelAbility> = listOf(ModelAbility.TOOL),
+    /**
+     * 能力位。**默认为空表示「未探测」**，不假设任何能力。
+     *
+     * 这个默认值必须与 UI 层 ModelInfo.abilities = emptyList() 保持一致。
+     * 原来这里默认 listOf(TOOL)，而 UI 默认空 —— 导致未探测的模型
+     * 在网关静默通过 require(tools)，筛选条件形同虚设。
+     *
+     * 要标记支持 TOOL，必须由「探测」实际确认后写入，不能靠默认值。
+     */
+    val abilities: List<ModelAbility> = emptyList(),
     val inputModalities: List<Modality> = listOf(Modality.TEXT),
     val outputModalities: List<Modality> = listOf(Modality.TEXT),
     val tools: List<BuiltInTool> = emptyList(),
-    val contextLength: Int = 128_000,
+    /**
+     * 上下文长度。0 表示「未知/未测」。
+     *
+     * 原来默认 128_000，而 UI 层默认 0 —— 用户看到 0，网关却按 128K 处理，
+     * require(min_ctx) 会误判。
+     * 未测到就是未知，不该凭空给一个乐观值。
+     */
+    val contextLength: Int = 0,
     /**
      * 输入价格（每百万 token，单位由用户自定，只要横向可比即可）。
      * 0 表示未填写 —— 未填价的模型不参与「最省优先」比较。
@@ -92,7 +108,8 @@ data class Model(
             tools = (m["tools"] as? List<*>)?.mapNotNull {
                 runCatching { BuiltInTool.valueOf(it.toString().uppercase()) }.getOrNull()
             } ?: emptyList(),
-            contextLength = (m["contextLength"] as? Number)?.toInt() ?: 128_000,
+            // 与 Model 默认值保持一致：未提供就是 0（未知），不凭空给 128K
+            contextLength = (m["contextLength"] as? Number)?.toInt() ?: 0,
             priceInPerM = (m["priceInPerM"] as? Number)?.toDouble() ?: 0.0,
             priceOutPerM = (m["priceOutPerM"] as? Number)?.toDouble() ?: 0.0,
             // 必须读：否则 UI 勾选对网关完全无效
@@ -140,8 +157,10 @@ data class Provider(
                 kind = p["kind"] as? String ?: "openai",
                 enabled = p["enabled"] as? Boolean ?: true,
                 tier = runCatching {
-                    Tier.valueOf((p["tier"] as? String ?: "paid").lowercase())
-                }.getOrDefault(Tier.paid),
+                    // 与 ProviderDraft.tier 默认值 "free" 保持一致。
+                    // 原来这里是 paid，UI 是 free，新建 provider 两侧语义相反。
+                    Tier.valueOf((p["tier"] as? String ?: "free").lowercase())
+                }.getOrDefault(Tier.free),
                 weight = (p["weight"] as? Number)?.toDouble() ?: 1.0,
                 quota = (p["quota"] as? Number)?.toDouble() ?: 1e9,
                 ratePolicy = rl,
@@ -171,7 +190,13 @@ data class RuleSpec(
     val description: String = "",
     val enabled: Boolean = true,
     val select: List<OpCall> = emptyList(),
-    val execute: OpCall = OpCall("race"),
+    /**
+     * 执行算子。默认 first —— 这是当前唯一真正实现的算子。
+     *
+     * 原来默认 OpCall("race")，而 race 尚未实现，
+     * 新建规则会立刻触发「未实现，降级为 first」的警告，等于默认值本身就在报错。
+     */
+    val execute: OpCall = OpCall("first"),
     val rateLimitOverride: Map<String, RatePolicy> = emptyMap(),
     /** 切换粒度，默认 TURN（安全） */
     val switchGranularity: SwitchGranularity = SwitchGranularity.TURN,
