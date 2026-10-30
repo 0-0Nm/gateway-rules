@@ -68,6 +68,8 @@ fun ProviderEditScreen(
     onProbeModels: (() -> Unit)? = null,
     onTestAll: (() -> Unit)? = null,
     onToggleModel: ((String) -> Unit)? = null,
+    /** 整条回传更新（价格等字段用） */
+    onUpdateModel: ((com.aqi.ccb.data.ModelInfo) -> Unit)? = null,
     onSuffixChange: ((String) -> Unit)? = null,
     testResult: String?,
 ) {
@@ -133,6 +135,7 @@ fun ProviderEditScreen(
                                 ModelRow(
                                     model = m,
                                     onToggle = { onToggleModel?.invoke(m.modelId) },
+                                    onUpdate = onUpdateModel,
                                 )
                             }
                         }
@@ -359,35 +362,91 @@ internal fun CardGroupScope.textFieldItem(
 internal fun ModelRow(
     model: com.aqi.ccb.data.ModelInfo,
     onToggle: () -> Unit,
+    onUpdate: ((com.aqi.ccb.data.ModelInfo) -> Unit)? = null,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = model.modelId,
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFont),
-                color = if (model.enabled)
-                    MaterialTheme.colorScheme.onSurface
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = model.statusLabel() +
-                    (if (model.lastError.isNotEmpty()) " · ${model.lastError}" else "") +
-                    (if (model.abilities.isNotEmpty()) " · ${model.abilities.joinToString(",")}" else ""),
-                style = MaterialTheme.typography.labelSmall,
-                color = when {
-                    model.available == true -> Color(0xFF2E7D32)     // 绿
-                    model.available == false -> MaterialTheme.colorScheme.error
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = model.modelId,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFont),
+                    color = if (model.enabled)
+                        MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = model.statusLabel() +
+                        (if (model.lastError.isNotEmpty()) " · ${model.lastError}" else "") +
+                        (if (model.abilities.isNotEmpty())
+                            " · ${model.abilities.joinToString(",")}" else "") +
+                        (if (model.hasPrice)
+                            " · ￥%.4f/%.4f".format(model.priceInPerM, model.priceOutPerM)
+                        else ""),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when {
+                        model.available == true -> Color(0xFF2E7D32)
+                        model.available == false -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+            Checkbox(checked = model.enabled, onCheckedChange = { onToggle() })
         }
-        Checkbox(checked = model.enabled, onCheckedChange = { onToggle() })
+
+        // ---- 单价编辑（每百万 token）----
+        // 上游 /v1/models 不返回价格，只能手填。
+        // 填了之后「最省优先」才能真正按价格排序。
+        if (onUpdate != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    "单价/百万tokens",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                listOf(
+                    "入" to model.priceInPerM,
+                    "出" to model.priceOutPerM,
+                ).forEach { (label, cur) ->
+                    OutlinedTextField(
+                        value = if (cur > 0) fmtPrice(cur) else "",
+                        onValueChange = { txt ->
+                            val v = txt.toDoubleOrNull() ?: 0.0
+                            onUpdate(
+                                if (label == "入") model.copy(priceInPerM = v)
+                                else model.copy(priceOutPerM = v)
+                            )
+                        },
+                        modifier = Modifier.width(78.dp),
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.labelSmall
+                            .copy(fontFamily = MonoFont),
+                        placeholder = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    )
+                }
+                if (model.hasPrice) {
+                    Text(
+                        "均 %s".format(fmtPrice(model.blendedPrice)),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
     }
 }
+
+/** 价格显示：去掉多余小数位 */
+internal fun fmtPrice(v: Double): String =
+    if (v == 0.0) "" else if (v >= 1) "%.2f".format(v) else "%.4f".format(v)
 
 // ==================== 小工具 ====================
 
