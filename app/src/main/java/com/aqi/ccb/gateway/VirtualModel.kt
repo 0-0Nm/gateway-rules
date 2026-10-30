@@ -104,7 +104,8 @@ object VirtualModelResolver {
         val ordered = mutableListOf<Pair<Int, Cand>>()
         for (m in vm.members) {
             val p = providers.firstOrNull { it.id == m.providerId && it.enabled } ?: continue
-            val model = p.models[m.modelId] ?: continue
+            // member 指向的模型也必须已勾选，否则虚拟模型会绕开初次筛选
+            val model = p.models[m.modelId]?.takeIf { it.enabled } ?: continue
             ordered.add(
                 m.priority to Cand(
                     p, model,
