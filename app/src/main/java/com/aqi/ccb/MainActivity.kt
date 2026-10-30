@@ -971,8 +971,10 @@ class MainActivity : ComponentActivity() {
                     val list = ids.split("\n").filter { it.isNotBlank() }
                     modelId = list.firstOrNull() ?: ""
                     ui.post {
+                        // 与 addProvider 保持一致：拉到的模型默认不勾选，
+                        // 否则「初次筛选」会被这里的重新拉取绕过。
                         providerDraft = providerDraft.copy(
-                            models = list.map { ModelInfo(modelId = it) }
+                            models = list.map { ModelInfo(modelId = it, enabled = false) }
                         )
                     }
                 }
@@ -1003,6 +1005,9 @@ class MainActivity : ComponentActivity() {
                         nonStreaming = res.nonStreaming,
                         streaming = res.streaming,
                         toolCall = res.toolCall,
+                        // 探测成功即视为用户明确要用它，自动勾选。
+                        // 探测失败则不改动，保持原勾选状态（避免误开不可用的模型）。
+                        enabled = if (res.nonStreaming) true else old.enabled,
                     )
                     providerDraft = providerDraft.copy(
                         models = cur,
