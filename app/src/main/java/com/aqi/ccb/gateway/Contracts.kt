@@ -41,8 +41,27 @@ data class Model(
     val inputModalities: List<Modality> = listOf(Modality.TEXT),
     val outputModalities: List<Modality> = listOf(Modality.TEXT),
     val tools: List<BuiltInTool> = emptyList(),
-    val contextLength: Int = 128_000
+    val contextLength: Int = 128_000,
+    /**
+     * 输入价格（每百万 token，单位由用户自定，只要横向可比即可）。
+     * 0 表示未填写 —— 未填价的模型不参与「最省优先」比较。
+     *
+     * 为什么必须放在模型级而不是 provider 级：
+     *   同一个 provider 下 gpt-oss-20b 与 nemotron-3-super-120b 价格差几十倍，
+     *   provider 级标签无法表达。
+     * 为什么是用户手填而不是自动拉取：
+     *   实测上游 /v1/models 只返回 id/object/created/owned_by/
+     *   supported_endpoint_types，完全不含价格。
+     */
+    val priceInPerM: Double = 0.0,
+    /** 输出价格（每百万 token）；0=未填 */
+    val priceOutPerM: Double = 0.0
 ) {
+    /** 是否填了价格（任一非 0 即算） */
+    val hasPrice: Boolean get() = priceInPerM > 0 || priceOutPerM > 0
+
+    /** 综合单价：输入与输出各半，用于横向比较只看一个数 */
+    val blendedPrice: Double get() = (priceInPerM + priceOutPerM) / 2.0
     companion object {
         fun fromJson(m: Map<String, Any?>): Model = Model(
             modelId = m["modelId"] as? String ?: error("model.modelId required"),
@@ -56,7 +75,9 @@ data class Model(
             tools = (m["tools"] as? List<*>)?.mapNotNull {
                 runCatching { BuiltInTool.valueOf(it.toString().uppercase()) }.getOrNull()
             } ?: emptyList(),
-            contextLength = (m["contextLength"] as? Number)?.toInt() ?: 128_000
+            contextLength = (m["contextLength"] as? Number)?.toInt() ?: 128_000,
+            priceInPerM = (m["priceInPerM"] as? Number)?.toDouble() ?: 0.0,
+            priceOutPerM = (m["priceOutPerM"] as? Number)?.toDouble() ?: 0.0
         )
     }
 }
