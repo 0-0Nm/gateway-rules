@@ -30,7 +30,20 @@ data class ModelInfo(
     val streaming: Boolean? = null,
     /** 三件套结果：工具调用 */
     val toolCall: Boolean? = null,
+    /**
+     * 输入单价（每百万 token）。0 = 未填。
+     * 单位随意，只要同一批候选之间可比即可（比如都用人民币）。
+     * 上游 /v1/models 不返回价格，只能手填。
+     */
+    val priceInPerM: Double = 0.0,
+    /** 输出单价（每百万 token）。0 = 未填。 */
+    val priceOutPerM: Double = 0.0,
 ) {
+    /** 是否填了价格 */
+    val hasPrice: Boolean get() = priceInPerM > 0 || priceOutPerM > 0
+
+    /** 综合单价，用于横向比较 */
+    val blendedPrice: Double get() = (priceInPerM + priceOutPerM) / 2.0
     fun statusLabel(): String = when {
         available == null -> "未测"
         available == true && latencyMs >= 0 -> "${latencyMs}ms"
@@ -48,6 +61,8 @@ data class ModelInfo(
         if (lastError.isNotEmpty()) put("lastError", lastError)
         if (testedAt > 0) put("testedAt", testedAt)
         put("enabled", enabled)
+        if (priceInPerM > 0) put("priceInPerM", priceInPerM)
+        if (priceOutPerM > 0) put("priceOutPerM", priceOutPerM)
         nonStreaming?.let { put("nonStreaming", it) }
         streaming?.let { put("streaming", it) }
         toolCall?.let { put("toolCall", it) }
@@ -69,6 +84,8 @@ data class ModelInfo(
             nonStreaming = if (o.has("nonStreaming")) o.optBoolean("nonStreaming") else null,
             streaming = if (o.has("streaming")) o.optBoolean("streaming") else null,
             toolCall = if (o.has("toolCall")) o.optBoolean("toolCall") else null,
+            priceInPerM = o.optDouble("priceInPerM", 0.0),
+            priceOutPerM = o.optDouble("priceOutPerM", 0.0),
         )
     }
 }
