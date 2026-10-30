@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
@@ -282,6 +283,19 @@ fun ProviderEditScreen(
                         Text("规则里选了「加权轮换」时生效；权重越大被选中概率越高，默认 1")
                     },
                 )
+                // 余额/配额：本系统无法自动查询上游余额，只能手填。
+                // 填了之后 quota_filter 才有意义；不填则该算子恒定通过。
+                textFieldItem(
+                    label = "余额/配额 quota（可留空）",
+                    value = draft.quota,
+                    onValueChange = { onDraftChange(draft.copy(quota = it.filterDigits())) },
+                    supportingText = {
+                        Text(
+                            "本系统不查询上游真实余额，此值仅供 quota_filter 使用。" +
+                                "留空则 quota_filter 不生效（会记录警告提醒你）"
+                        )
+                    },
+                )
                 switchItem(
                     checked = draft.enabled,
                     onCheckedChange = { onDraftChange(draft.copy(enabled = it)) },
@@ -439,6 +453,50 @@ internal fun ModelRow(
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
+            }
+
+            // ---- 模型类型：决定这个模型能用来做什么 ----
+            // 对话 / 图像生成 / 向量嵌入，三者调用方式完全不同。
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    "类型",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                listOf("CHAT" to "对话", "IMAGE" to "图像", "EMBEDDING" to "向量")
+                    .forEach { (key, label) ->
+                        val sel = model.type == key
+                        AssistChip(
+                            onClick = { onUpdate?.invoke(model.copy(type = key)) },
+                            label = {
+                                Text(
+                                    label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (sel) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            },
+                        )
+                    }
+                Spacer(Modifier.weight(1f))
+                // 是否支持 tools：探测得出的结果，只读展示
+                Text(
+                    when {
+                        model.toolCall == true -> "TOOL ✓"
+                        model.toolCall == false -> "TOOL ✗"
+                        else -> "TOOL ?"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when {
+                        model.toolCall == true -> Color(0xFF2E7D32)
+                        model.toolCall == false -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
             }
         }
     }
