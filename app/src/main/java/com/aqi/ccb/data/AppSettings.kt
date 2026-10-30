@@ -41,18 +41,12 @@ object AppSettings {
     /**
      * MCP 服务开关。
      *
-     * 默认 **false**：MCP 默认不启动。
-     *
-     * 之前曾把默认值改成 true（想与悬浮窗默认值对齐），结果更糟：
-     * 首次启动时设置页开关显示「关」（settingsState 硬编码 false），
-     * 但 MCP 实际被拉起了，于是悬浮球如实显示 MA ——
-     * 三处各说各话，用户看到「开关关着但球显示 MA」。
-     *
-     * 现在统一为 false：开关关、服务不启动、球显示 MD，三者一致。
-     * 用户需要 MCP 时在设置里打开即可。
+     * 默认值改为 true，与悬浮窗（默认 true）保持一致。
+     * 之前默认 false 导致首次启动「悬浮窗开着、MCP 关着」的割裂状态。
+     * MCP 仅监听 127.0.0.1，只有本机可访问，默认开启风险可控。
      */
     fun mcpEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_MCP_ENABLED, false)
+        prefs(context).getBoolean(KEY_MCP_ENABLED, true)
 
     fun setMcpEnabled(context: Context, v: Boolean) =
         prefs(context).edit().putBoolean(KEY_MCP_ENABLED, v).apply()
@@ -260,6 +254,29 @@ class McpBridge(private val context: Context) : McpConfig {
      * 通过 MCP 永远拿到 {"log":"(empty)"}。
      * 现在优先读外部目录，回退内部（兼容旧装）。
      */
+    override fun reloadConfig(): String = try {
+        val providers = ProviderRepo.runtimeProviders(context)
+        val rules = ProviderRepo.runtimeRules(context)
+        val vmodels = VirtualModelStore.load(context)
+        val gw = GatewayService.current
+            ?: return """{"ok":false,"error":"网关未运行，启动后再试"}"""
+        gw.update(providers, rules, vmodels)
+        GateLog.info(
+            "config",
+            "hot reload: providers=" + providers.size +
+                " rules=" + rules.size + " vmodels=" + vmodels.size
+        )
+        JSONObject().apply {
+            put("ok", true)
+            put("providers", providers.size)
+            put("rules", rules.size)
+            put("virtualModels", vmodels.size)
+            put("note", "已热加载，无需重启")
+        }.toString(2)
+    } catch (e: Exception) {
+        """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+    }
+
     override fun readLog(lines: Int): String = try {
         val n = lines.coerceIn(1, 500)
         val extBase = try {
