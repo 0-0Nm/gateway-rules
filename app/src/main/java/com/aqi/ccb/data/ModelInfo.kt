@@ -31,6 +31,19 @@ data class ModelInfo(
     /** 三件套结果：工具调用 */
     val toolCall: Boolean? = null,
     /**
+     * 模型类型：CHAT / IMAGE / EMBEDDING。
+     *
+     * 补这个字段的原因：网关 Model 有它，UI 一直没有，
+     * 用户无法区分对话模型与向量模型，全按 CHAT 处理。
+     */
+    val type: String = "CHAT",
+    /** 输入模态：TEXT / IMAGE（可多选） */
+    val inputModalities: List<String> = listOf("TEXT"),
+    /** 输出模态：TEXT / IMAGE（可多选） */
+    val outputModalities: List<String> = listOf("TEXT"),
+    /** 内置工具：搜索/URL/图像生成等，取值见网关 BuiltInTool */
+    val tools: List<String> = emptyList(),
+    /**
      * 输入单价（每百万 token）。0 = 未填。
      * 单位随意，只要同一批候选之间可比即可（比如都用人民币）。
      * 上游 /v1/models 不返回价格，只能手填。
@@ -61,6 +74,10 @@ data class ModelInfo(
         if (lastError.isNotEmpty()) put("lastError", lastError)
         if (testedAt > 0) put("testedAt", testedAt)
         put("enabled", enabled)
+        put("type", type)
+        if (inputModalities.isNotEmpty()) put("inputModalities", JSONArray(inputModalities))
+        if (outputModalities.isNotEmpty()) put("outputModalities", JSONArray(outputModalities))
+        if (tools.isNotEmpty()) put("tools", JSONArray(tools))
         if (priceInPerM > 0) put("priceInPerM", priceInPerM)
         if (priceOutPerM > 0) put("priceOutPerM", priceOutPerM)
         nonStreaming?.let { put("nonStreaming", it) }
@@ -84,6 +101,16 @@ data class ModelInfo(
             nonStreaming = if (o.has("nonStreaming")) o.optBoolean("nonStreaming") else null,
             streaming = if (o.has("streaming")) o.optBoolean("streaming") else null,
             toolCall = if (o.has("toolCall")) o.optBoolean("toolCall") else null,
+            type = o.optString("type", "CHAT"),
+            inputModalities = o.optJSONArray("inputModalities")?.let { a ->
+                (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+            } ?: listOf("TEXT"),
+            outputModalities = o.optJSONArray("outputModalities")?.let { a ->
+                (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+            } ?: listOf("TEXT"),
+            tools = o.optJSONArray("tools")?.let { a ->
+                (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+            } ?: emptyList(),
             priceInPerM = o.optDouble("priceInPerM", 0.0),
             priceOutPerM = o.optDouble("priceOutPerM", 0.0),
         )
