@@ -54,11 +54,19 @@ data class RuleDraft(
     val maxInflight: String = "2",
 ) {
     companion object {
+        /**
+         * 「全排序」算子：互相覆盖，同一条规则里只能有一个生效。
+         * 与 RuleEngine.FULL_SORT_OPS 保持一致。
+         */
+        val FULL_SORT_OPS = setOf(
+            "tier_first", "cheapest_first", "fastest_first", "least_errors", "lru",
+        )
+
         /** select 算子清单：key -> (中文名, 说明) */
         val SELECT_OPS = listOf(
             Triple("breaker_filter", "熔断过滤", "剔除正在熔断的提供商"),
             Triple("require", "能力要求", "只留支持 tools 的"),
-            Triple("quota_filter", "配额过滤", "余额低于阈值剔除"),
+            Triple("quota_filter", "配额过滤 ⚠ 暂不生效", "需要上游余额查询接口，目前无数据源"),
             Triple("where", "表达式过滤", "如 lat < 3000"),
             Triple("tier_first", "免费优先", "免费额度优先"),
             Triple("fastest_first", "最快优先", "按实测延迟排序"),
@@ -73,7 +81,7 @@ data class RuleDraft(
             Triple("ab_split", "A/B 分桶", "确定性分桶灰度"),
             Triple("canary", "灰度", "按百分比放量"),
             Triple("error_rate", "错误率过滤", "滑动窗口"),
-            Triple("budget_cap", "预算上限", "超预算剔除"),
+            Triple("budget_cap", "预算上限 ⚠ 暂不生效", "需要 token 用量统计与定价表，目前无数据源"),
             Triple("take", "截断", "只留前 N 个"),
         )
 
@@ -141,10 +149,19 @@ fun RuleEditScreen(
             CardGroup(title = { Text("① 选路（按勾选顺序执行）") }) {
                 RuleDraft.SELECT_OPS.forEach { (key, label, desc) ->
                     val checked = draft.selectedOps.contains(key)
+                    val isSort = key in RuleDraft.FULL_SORT_OPS
                     item(
                         onClick = {
                             val next = draft.selectedOps.toMutableList()
-                            if (checked) next.remove(key) else next.add(key)
+                            if (checked) {
+                                next.remove(key)
+                            } else {
+                                // 排序类互斥：先摘掉已有的排序算子再插入。
+                                // 引擎层也会跳过重复排序，这里只是让 UI 与行为一致，
+                                // 避免用户勾了三个却只有一个生效还蒙在鼓里。
+                                if (isSort) next.removeAll { it in RuleDraft.FULL_SORT_OPS }
+                                next.add(key)
+                            }
                             onDraftChange(draft.copy(selectedOps = next))
                         },
                         leadingContent = {
