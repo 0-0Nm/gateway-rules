@@ -43,6 +43,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.2")
 
     implementation("androidx.compose.ui:ui")
+    // LazyColumn / clickable / verticalScroll 都在这里。
+    // 虽然 material3 会传递引入，但显式声明可避免上游改传递关系后编译突然失败。
+    implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
