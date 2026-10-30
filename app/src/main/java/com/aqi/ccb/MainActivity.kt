@@ -984,7 +984,33 @@ class MainActivity : ComponentActivity() {
             val res = ModelProbe.probe(d.baseUrl.trimEnd('/'), d.apiKey, modelId)
             ui.post {
                 providerTest = res.summary()
-                providerDraft = providerDraft.copy(probeResult = res.summary())
+                // 关键修复：探测结果必须写回 ModelInfo，
+                // 否则 require(tools) 永远匹配不到——网关不知道任何模型带 TOOL。
+                val cur = providerDraft.models.toMutableList()
+                val idx = cur.indexOfFirst { it.modelId == modelId }
+                if (idx >= 0) {
+                    val old = cur[idx]
+                    val abs = mutableListOf<String>()
+                    if (res.toolCall) abs.add("TOOL")
+                    if (old.abilities.contains("REASONING")) abs.add("REASONING")
+                    if (old.abilities.contains("VISION")) abs.add("VISION")
+                    cur[idx] = old.copy(
+                        available = res.nonStreaming,
+                        latencyMs = if (res.nonStreaming) res.latencyMs else -1,
+                        lastError = res.error ?: "",
+                        testedAt = System.currentTimeMillis(),
+                        abilities = abs,
+                        nonStreaming = res.nonStreaming,
+                        streaming = res.streaming,
+                        toolCall = res.toolCall,
+                    )
+                    providerDraft = providerDraft.copy(
+                        models = cur,
+                        probeResult = res.summary(),
+                    )
+                } else {
+                    providerDraft = providerDraft.copy(probeResult = res.summary())
+                }
             }
         }.start()
     }
