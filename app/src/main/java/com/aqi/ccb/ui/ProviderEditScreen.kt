@@ -270,6 +270,15 @@ fun ProviderEditScreen(
                     value = draft.maxInflight,
                     onValueChange = { onDraftChange(draft.copy(maxInflight = it.filterDigits())) },
                 )
+                // 权重：只有 weighted_rr 算子会用到，但放在这里让用户能看见
+                textFieldItem(
+                    label = "权重 weight（仅加权轮换用）",
+                    value = draft.weight,
+                    onValueChange = { onDraftChange(draft.copy(weight = it.filterDigits())) },
+                    supportingText = {
+                        Text("规则里选了「加权轮换」时生效；权重越大被选中概率越高，默认 1")
+                    },
+                )
                 switchItem(
                     checked = draft.enabled,
                     onCheckedChange = { onDraftChange(draft.copy(enabled = it)) },
