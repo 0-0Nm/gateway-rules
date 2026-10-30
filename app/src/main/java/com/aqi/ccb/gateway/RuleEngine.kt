@@ -61,15 +61,35 @@ object RuleEngine {
 
     // ==================== select 纯算子 ====================
 
+    /**
+     * 能力过滤。
+     *
+     * 注意：abilities 为空表示「未探测」，不等于「不支持」。
+     * 未探测的模型会被这里过滤掉 —— 这是刻意的：宁可让用户去探测，
+     * 也不要假装它支持 tool call 然后在调用时失败。
+     * 全部被过滤掉时记明确警告，告知是「没探测」而不是「不支持」。
+     */
     fun opRequire(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
         val needTools = a["tools"] as? Boolean ?: false
         val needVision = a["vision"] as? Boolean ?: false
         val minCtx = (a["min_ctx"] as? Number)?.toInt()
-        return cs.filter { c ->
+        val passed = cs.filter { c ->
             (!needTools || c.m.abilities.contains(ModelAbility.TOOL)) &&
             (!needVision || c.m.abilities.contains(ModelAbility.VISION)) &&
             (minCtx == null || c.m.contextLength >= minCtx)
         }
+        if (!ctx.dryRun && passed.isEmpty() && cs.isNotEmpty()) {
+            val untested = cs.count { it.m.abilities.isEmpty() }
+            GateLog.warn(
+                "rule",
+                "require 过滤掉全部候选，需要的模型：" +
+                    (if (needTools) "TOOL " else "") +
+                    (if (needVision) "VISION " else "") +
+                    "| 共 " + cs.size + " 个候选，其中 " + untested +
+                    " 个从未探测过（abilities 为空）。请先在提供商页点击「探测」确认能力。"
+            )
+        }
+        return passed
     }
 
     fun opBreakerFilter(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
