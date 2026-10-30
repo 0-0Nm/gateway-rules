@@ -126,8 +126,9 @@ internal fun ModelPicker(
 
         // ---------- 按 provider 分组 ----------
         LazyColumn(modifier = Modifier.fillMaxWidth()) {
-            filtered.forEachIndexed { _, prov ->
-                val pIdx = providers.indexOfFirst { it.id == prov.id }
+            filtered.forEach { prov ->
+                // ProviderDraft 没有 id 字段，标识由 name 派生（见 idOr）
+                val pIdx = providers.indexOfFirst { it.idOr() == prov.idOr() }
                 // 分组标题
                 item(key = "hdr-${prov.idOr()}") {
                     Row(
