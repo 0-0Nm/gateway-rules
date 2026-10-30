@@ -250,6 +250,15 @@ class MainActivity : ComponentActivity() {
                                 providerDraft = providerDraft.copy(models = cur)
                             }
                         },
+                        // 价格等字段整条回传更新
+                        onUpdateModel = { updated ->
+                            val cur = providerDraft.models.toMutableList()
+                            val i = cur.indexOfFirst { it.modelId == updated.modelId }
+                            if (i >= 0) {
+                                cur[i] = updated
+                                providerDraft = providerDraft.copy(models = cur)
+                            }
+                        },
                         onSuffixChange = { st ->
                             providerDraft = providerDraft.copy(suffixStyle = st)
                         },
