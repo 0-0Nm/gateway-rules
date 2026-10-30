@@ -274,6 +274,12 @@ class McpServer(
             JSONObject().put("type", "object").put("properties", JSONObject())
         ))
         arr.put(tool(
+            "gw_reload_config",
+            "热加载配置：重新读取 providers/rules/virtual_models 并推给运行中的网关，" +
+                "无需重启 App。改完配置文件后调一次即可生效。",
+            JSONObject().put("type", "object").put("properties", JSONObject())
+        ))
+        arr.put(tool(
             "gw_read_log",
             "读取系统日志尾部",
             JSONObject().apply {
@@ -333,6 +339,7 @@ class McpServer(
                 "gw_list_rules" -> cfg.listRulesJson()
                 "gw_list_virtual_models" -> cfg.listVirtualModelsJson()
                 "gw_get_status" -> cfg.statusJson(gatewayPort)
+                "gw_reload_config" -> cfg.reloadConfig()
                 "gw_read_log" -> cfg.readLog(args.optInt("lines", 50))
                 "gw_get_ui_style" -> cfg.getUiStyleJson()
                 "gw_set_ui_style" -> cfg.setUiStyle(args.toString())
@@ -430,4 +437,14 @@ interface McpConfig {
     fun getUiStyleJson(): String
     /** 按 JSON patch 修改 UI 样式，返回改后完整配置 */
     fun setUiStyle(patchJson: String): String
+
+    /**
+     * 热加载配置：重新读取 providers/rules/virtual_models 并推给运行中的网关，
+     * 不需要重启 App。
+     *
+     * 为什么需要：改一次规则要 force-stop + 重启（约 15 秒），
+     * 实测 20 条规则要等 5 分钟，而且 force-stop 不触发 onDestroy，
+     * 用户看到的是「App 突然消失」，会误以为崩溃。
+     */
+    fun reloadConfig(): String
 }
