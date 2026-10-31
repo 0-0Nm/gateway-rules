@@ -305,6 +305,256 @@ class McpBridge(private val context: Context) : McpConfig {
         }
     }
 
+    // ==================== 写操作实现（MCP 完整 CLI 化） ====================
+
+    override fun updateProvider(providerId: String, patchJson: String): String {
+        return try {
+            val all = ProviderRepo.list(context)
+            val idx = all.indexOfFirst { it.idOr() == providerId }
+            if (idx < 0) {
+                return """{"ok":false,"error":"provider not found: $providerId"}"""
+            }
+            val patch = JSONObject(patchJson)
+            val cur = all[idx]
+            // 逐字段按 patch 覆盖；未出现的字段保持原值
+            fun str(k: String, d: String) = if (patch.has(k)) patch.optString(k, d) else d
+            fun num(k: String, d: String) = if (patch.has(k)) patch.opt(k).toString() else d
+            fun bool(k: String, d: Boolean) = if (patch.has(k)) patch.optBoolean(k, d) else d
+            val next = cur.copy(
+                name = str("name", cur.name),
+                baseUrl = str("baseUrl", cur.baseUrl),
+                apiKey = str("apiKey", cur.apiKey),
+                enabled = bool("enabled", cur.enabled),
+                tier = str("tier", cur.tier),
+                weight = num("weight", cur.weight),
+                quota = str("quota", cur.quota),
+                ratePerMin = num("ratePerMin", cur.ratePerMin),
+                burst = num("burst", cur.burst),
+                minIntervalMs = num("minIntervalMs", cur.minIntervalMs),
+                jitterMs = num("jitterMs", cur.jitterMs),
+                maxInflight = num("maxInflight", cur.maxInflight),
+                suffixStyle = str("suffixStyle", cur.suffixStyle),
+            )
+            val ok = ProviderRepo.save(context, next)
+            if (ok) {
+                GatewayRuntime.applyConfig(
+                    ProviderRepo.runtimeProviders(context),
+                    ProviderRepo.runtimeRules(context),
+                    VirtualModelStore.load(context),
+                )
+            }
+            JSONObject().apply {
+                put("ok", ok)
+                put("providerId", providerId)
+                put("note", if (ok) "已保存并热加载" else "保存失败（字段不完整？）")
+            }.toString(2)
+        } catch (e: Exception) {
+            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+        }
+    }
+
+    override fun deleteProvider(providerId: String): String {
+        return try {
+            ProviderRepo.delete(context, providerId)
+            GatewayRuntime.applyConfig(
+                ProviderRepo.runtimeProviders(context),
+                ProviderRepo.runtimeRules(context),
+                VirtualModelStore.load(context),
+            )
+            """{"ok":true,"deleted":"$providerId"}"""
+        } catch (e: Exception) {
+            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+        }
+    }
+
+    override fun updateModel(providerId: String, modelId: String, patchJson: String): String {
+        return try {
+            val all = ProviderRepo.list(context)
+            val idx = all.indexOfFirst { it.idOr() == providerId }
+            if (idx < 0) return """{"ok":false,"error":"provider not found: $providerId"}"""
+            val cur = all[idx]
+            val mi = cur.models.indexOfFirst { it.modelId == modelId }
+            if (mi < 0) return """{"ok":false,"error":"model not found: $modelId"}"""
+            val patch = JSONObject(patchJson)
+            val old = cur.models[mi]
+
+            fun strList(k: String, d: List<String>): List<String> {
+                if (!patch.has(k)) return d
+                val a = patch.optJSONArray(k) ?: return d
+                return (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+            }
+
+            val next = old.copy(
+                displayName = if (patch.has("displayName")) patch.optString("displayName", old.displayName) else old.displayName,
+                enabled = if (patch.has("enabled")) patch.optBoolean("enabled", old.enabled) else old.enabled,
+                type = if (patch.has("type")) patch.optString("type", old.type) else old.type,
+                abilities = strList("abilities", old.abilities),
+                inputModalities = strList("inputModalities", old.inputModalities),
+                outputModalities = strList("outputModalities", old.outputModalities),
+                tools = strList("tools", old.tools),
+                contextLength = if (patch.has("contextLength")) patch.optInt("contextLength", old.contextLength) else old.contextLength,
+                priceInPerM = if (patch.has("priceInPerM")) patch.optDouble("priceInPerM", old.priceInPerM) else old.priceInPerM,
+                priceOutPerM = if (patch.has("priceOutPerM")) patch.optDouble("priceOutPerM", old.priceOutPerM) else old.priceOutPerM,
+            )
+            val models = cur.models.toMutableList()
+            models[mi] = next
+            val ok = ProviderRepo.save(context, cur.copy(models = models))
+            if (ok) {
+                GatewayRuntime.applyConfig(
+                    ProviderRepo.runtimeProviders(context),
+                    ProviderRepo.runtimeRules(context),
+                    VirtualModelStore.load(context),
+                )
+            }
+            JSONObject().apply {
+                put("ok", ok)
+                put("providerId", providerId)
+                put("modelId", modelId)
+                put("model", next.toJson())
+            }.toString(2)
+        } catch (e: Exception) {
+            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+        }
+    }
+
+    override fun setModelsEnabled(providerId: String, modelIdsJson: String, enabled: Boolean): String {
+        return try {
+            val all = ProviderRepo.list(context)
+            val idx = all.indexOfFirst { it.idOr() == providerId }
+            if (idx < 0) return """{"ok":false,"error":"provider not found: $providerId"}"""
+            val cur = all[idx]
+            val arr = JSONArray(modelIdsJson)
+            val targets = (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }.toSet()
+            var changed = 0
+            val models = cur.models.map { m ->
+                if (m.modelId in targets && m.enabled != enabled) {
+                    changed++
+                    m.copy(enabled = enabled)
+                } else m
+            }
+            val ok = ProviderRepo.save(context, cur.copy(models = models))
+            if (ok) {
+                GatewayRuntime.applyConfig(
+                    ProviderRepo.runtimeProviders(context),
+                    ProviderRepo.runtimeRules(context),
+                    VirtualModelStore.load(context),
+                )
+            }
+            JSONObject().apply {
+                put("ok", ok)
+                put("changed", changed)
+                put("requested", targets.size)
+                put("enabled", enabled)
+                put("enabledTotal", models.count { it.enabled })
+                put("total", models.size)
+            }.toString(2)
+        } catch (e: Exception) {
+            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+        }
+    }
+
+    override fun saveRule(ruleJson: String): String {
+        return try {
+            val obj = JSONObject(ruleJson)
+            if (!obj.has("id") || obj.optString("id").isBlank()) {
+                return """{"ok":false,"error":"rule.id required"}"""
+            }
+            ProviderRepo.saveRule(context, obj)
+            GatewayRuntime.applyConfig(
+                ProviderRepo.runtimeProviders(context),
+                ProviderRepo.runtimeRules(context),
+                VirtualModelStore.load(context),
+            )
+            JSONObject().apply {
+                put("ok", true)
+                put("ruleId", obj.optString("id"))
+                put("total", ProviderRepo.listRules(context).size)
+            }.toString(2)
+        } catch (e: Exception) {
+            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+        }
+    }
+
+    override fun deleteRule(ruleId: String): String {
+        return try {
+            ProviderRepo.deleteRule(context, ruleId)
+            GatewayRuntime.applyConfig(
+                ProviderRepo.runtimeProviders(context),
+                ProviderRepo.runtimeRules(context),
+                VirtualModelStore.load(context),
+            )
+            """{"ok":true,"deleted":"$ruleId","total":${ProviderRepo.listRules(context).size}}"""
+        } catch (e: Exception) {
+            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+        }
+    }
+
+    override fun saveVirtualModel(vmJson: String): String {
+        return try {
+            val obj = JSONObject(vmJson)
+            val name = obj.optString("name")
+            if (name.isBlank()) return """{"ok":false,"error":"virtual model name required"}"""
+            val members = obj.optJSONArray("members") ?: JSONArray()
+            if (members.length() == 0) {
+                return """{"ok":false,"error":"members required (至少一个 {providerId, modelId})"}"""
+            }
+            // 校验每个 member 的 provider 是否真实存在，避免像 "a"/"b" 那样写错
+            val provIds = ProviderRepo.list(context).map { it.idOr() }.toSet()
+            val bad = mutableListOf<String>()
+            for (i in 0 until members.length()) {
+                val m = members.optJSONObject(i) ?: continue
+                val pid = m.optString("providerId")
+                if (pid !in provIds) bad.add(pid)
+            }
+            if (bad.isNotEmpty()) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "这些 providerId 不存在: " + bad.joinToString(","))
+                    put("available", JSONArray(provIds.toList()))
+                }.toString(2)
+            }
+            val vm = com.aqi.ccb.gateway.VirtualModel.fromJson(obj)
+            val list = VirtualModelStore.load(context)
+            val idx = list.indexOfFirst { it.name == name }
+            if (idx >= 0) list[idx] = vm else list.add(vm)
+            VirtualModelStore.save(context, list)
+            GatewayRuntime.applyConfig(
+                ProviderRepo.runtimeProviders(context),
+                ProviderRepo.runtimeRules(context),
+                VirtualModelStore.load(context),
+            )
+            JSONObject().apply {
+                put("ok", true)
+                put("name", name)
+                put("members", members.length())
+                put("total", list.size)
+            }.toString(2)
+        } catch (e: Exception) {
+            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+        }
+    }
+
+    override fun deleteVirtualModel(name: String): String {
+        return try {
+            val list = VirtualModelStore.load(context)
+            val before = list.size
+            list.removeAll { it.name == name }
+            VirtualModelStore.save(context, list)
+            GatewayRuntime.applyConfig(
+                ProviderRepo.runtimeProviders(context),
+                ProviderRepo.runtimeRules(context),
+                VirtualModelStore.load(context),
+            )
+            JSONObject().apply {
+                put("ok", true)
+                put("deleted", if (list.size < before) name else null)
+                put("total", list.size)
+            }.toString(2)
+        } catch (e: Exception) {
+            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
+        }
+    }
+
     override fun readLog(lines: Int): String = try {
         val n = lines.coerceIn(1, 500)
         val extBase = try {
