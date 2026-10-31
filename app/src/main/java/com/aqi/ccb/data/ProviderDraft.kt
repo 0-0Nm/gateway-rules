@@ -13,6 +13,18 @@ import org.json.JSONObject
  * 延迟 / 可用性 / 三件套结果，并支持批量测试。
  */
 data class ProviderDraft(
+    /**
+     * 持久化 ID。与 gateway 层 Provider.id 对应。
+     *
+     * 为什么必须显式保存：原来没有这个字段，idOr() 只能从 name 派生，
+     * name 是「幻言 A」这种中文时会派生成「幻言-a」，
+     * 而配置文件里 id 是 "huanyan-a" —— 两者对不上，
+     * 导致通过 MCP 用 providerId 定位提供商永远失败
+     * （报 provider not found，但 diag 里明明有这个名字）。
+     *
+     * 现在：id 非空则直接用它，为空才回退到 name 派生（兼容旧配置）。
+     */
+    val id: String = "",
     val name: String = "",
     val baseUrl: String = "",
     val apiKey: String = "",
@@ -53,12 +65,15 @@ data class ProviderDraft(
     val modelId: String
         get() = models.joinToString(",") { it.modelId }
 
-    fun idOr(nameFallback: String = "provider"): String =
-        (name.ifBlank { nameFallback })
+    fun idOr(nameFallback: String = "provider"): String {
+        // 显式 id 优先：它才是与配置文件、网关 Provider.id 一致的那个标识
+        if (id.isNotBlank()) return id
+        return (name.ifBlank { nameFallback })
             .lowercase()
             .replace(Regex("[^a-z0-9]+"), "-")
             .trim('-')
             .ifEmpty { "provider" }
+    }
 
     val isComplete: Boolean
         get() = name.isNotBlank() && baseUrl.isNotBlank() && models.isNotEmpty()
@@ -102,6 +117,7 @@ data class ProviderDraft(
 
             val rl = o.optJSONObject("rateLimit")
             return ProviderDraft(
+                id = o.optString("id", ""),
                 name = o.optString("name", ""),
                 baseUrl = o.optString("baseUrl", ""),
                 apiKey = "",
