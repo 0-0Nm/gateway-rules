@@ -279,6 +279,120 @@ class McpServer(
                 "无需重启 App。改完配置文件后调一次即可生效。",
             JSONObject().put("type", "object").put("properties", JSONObject())
         ))
+        // ==================== 写操作工具 ====================
+        // 存在理由：原来 MCP 只有读和 add_provider，改限流/开关模型/增删规则
+        // 全得点 UI。有 MCP 还模拟点击是设计缺陷。
+
+        arr.put(tool(
+            "gw_update_provider",
+            "修改提供商属性（限流/开关/tier/weight/quota/baseUrl 等）。" +
+                "只传要改的字段，其余保持原值。保存后自动热加载。",
+            JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("providerId", str("提供商 ID 或 name 派生出的 idOr"))
+                    put("patch", obj("要修改的字段。可用：name baseUrl apiKey enabled tier " +
+                        "weight quota ratePerMin burst minIntervalMs jitterMs " +
+                        "maxInflight suffixStyle"))
+                })
+                put("required", JSONArray().put("providerId").put("patch"))
+            }
+        ))
+
+        arr.put(tool(
+            "gw_delete_provider",
+            "删除提供商。保存后自动热加载。",
+            JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("providerId", str("提供商 ID"))
+                })
+                put("required", JSONArray().put("providerId"))
+            }
+        ))
+
+        arr.put(tool(
+            "gw_update_model",
+            "修改单个模型属性（启停/类型/能力/模态/内置工具/上下文/单价）。" +
+                "abilities 可选 TOOL,REASONING；type 可选 CHAT,IMAGE,EMBEDDING；" +
+                "tools 可选 SEARCH,URL_CONTEXT,IMAGE_GENERATION。保存后自动热加载。",
+            JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("providerId", str("提供商 ID"))
+                    put("modelId", str("模型 ID"))
+                    put("patch", obj("要修改的字段。可用：displayName enabled type abilities " +
+                        "inputModalities outputModalities tools contextLength " +
+                        "priceInPerM priceOutPerM。数组字段传 JSON 数组。"))
+                })
+                put("required", JSONArray().put("providerId").put("modelId").put("patch"))
+            }
+        ))
+
+        arr.put(tool(
+            "gw_set_models_enabled",
+            "批量设置模型启用状态。传模型 ID 数组，一次开关多个。保存后自动热加载。",
+            JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("providerId", str("提供商 ID"))
+                    put("modelIds", arr2("模型 ID 数组，如 [\"gpt-oss-20b\",\"BAAI/bge-m3\"]"))
+                    put("enabled", bool("true=启用，false=禁用"))
+                })
+                put("required", JSONArray().put("providerId").put("modelIds").put("enabled"))
+            }
+        ))
+
+        arr.put(tool(
+            "gw_save_rule",
+            "保存规则（传完整规则 JSON，id 存在则覆盖）。保存后自动热加载。",
+            JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("rule", obj("完整规则对象，至少含 id"))
+                })
+                put("required", JSONArray().put("rule"))
+            }
+        ))
+
+        arr.put(tool(
+            "gw_delete_rule",
+            "删除规则。保存后自动热加载。",
+            JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("ruleId", str("规则 ID"))
+                })
+                put("required", JSONArray().put("ruleId"))
+            }
+        ))
+
+        arr.put(tool(
+            "gw_save_virtual_model",
+            "保存虚拟模型（name 存在则覆盖）。会先校验每个 member 的 providerId 是否真实存在，" +
+                "避免写错 ID 导致虚拟模型静默失效。保存后自动热加载。",
+            JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("virtualModel", obj("完整虚拟模型对象：{name, description, enabled, " +
+                        "ruleId, members:[{providerId, modelId, priority, weight}]}"))
+                })
+                put("required", JSONArray().put("virtualModel"))
+            }
+        ))
+
+        arr.put(tool(
+            "gw_delete_virtual_model",
+            "删除虚拟模型。保存后自动热加载。",
+            JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("name", str("虚拟模型名称"))
+                })
+                put("required", JSONArray().put("name"))
+            }
+        ))
+
         arr.put(tool(
             "gw_read_log",
             "读取系统日志尾部",
@@ -340,6 +454,27 @@ class McpServer(
                 "gw_list_virtual_models" -> cfg.listVirtualModelsJson()
                 "gw_get_status" -> cfg.statusJson(gatewayPort)
                 "gw_reload_config" -> cfg.reloadConfig()
+                "gw_update_provider" -> cfg.updateProvider(
+                    args.optString("providerId"), args.optJSONObject("patch")?.toString() ?: "{}"
+                )
+                "gw_delete_provider" -> cfg.deleteProvider(args.optString("providerId"))
+                "gw_update_model" -> cfg.updateModel(
+                    args.optString("providerId"), args.optString("modelId"),
+                    args.optJSONObject("patch")?.toString() ?: "{}"
+                )
+                "gw_set_models_enabled" -> cfg.setModelsEnabled(
+                    args.optString("providerId"),
+                    args.optJSONArray("modelIds")?.toString() ?: "[]",
+                    args.optBoolean("enabled", true)
+                )
+                "gw_save_rule" -> cfg.saveRule(
+                    args.optJSONObject("rule")?.toString() ?: "{}"
+                )
+                "gw_delete_rule" -> cfg.deleteRule(args.optString("ruleId"))
+                "gw_save_virtual_model" -> cfg.saveVirtualModel(
+                    args.optJSONObject("virtualModel")?.toString() ?: "{}"
+                )
+                "gw_delete_virtual_model" -> cfg.deleteVirtualModel(args.optString("name"))
                 "gw_read_log" -> cfg.readLog(args.optInt("lines", 50))
                 "gw_get_ui_style" -> cfg.getUiStyleJson()
                 "gw_set_ui_style" -> cfg.setUiStyle(args.toString())
@@ -359,6 +494,18 @@ class McpServer(
     }
 
     // ==================== 工具方法 ====================
+    private fun str(desc: String): JSONObject =
+        JSONObject().put("type", "string").put("description", desc)
+
+    private fun obj(desc: String): JSONObject =
+        JSONObject().put("type", "object").put("description", desc)
+
+    private fun arr2(desc: String): JSONObject =
+        JSONObject().put("type", "array").put("description", desc)
+
+    private fun bool(desc: String): JSONObject =
+        JSONObject().put("type", "boolean").put("description", desc)
+
     private fun tool(name: String, desc: String, schema: JSONObject): JSONObject =
         JSONObject().apply {
             put("name", name)
@@ -447,4 +594,39 @@ interface McpConfig {
      * 用户看到的是「App 突然消失」，会误以为崩溃。
      */
     fun reloadConfig(): String
+
+    // ==================== 写操作：让 MCP 成为完整 CLI ====================
+    //
+    // 下面这些接口存在的原因：原来 MCP 只有「读」和「add_provider」，
+    // 改限流、开关模型、调价格、增删规则、改虚拟模型全得点 UI。
+    // 有 MCP 还要模拟点击是设计缺陷，不是使用方式问题。
+
+    /** 按 JSON patch 修改提供商；返回改后完整对象 */
+    fun updateProvider(providerId: String, patchJson: String): String
+
+    /** 删除提供商 */
+    fun deleteProvider(providerId: String): String
+
+    /**
+     * 修改单个模型的属性。
+     * patch 支持：enabled / type / abilities / inputModalities /
+     *             outputModalities / tools / contextLength /
+     *             priceInPerM / priceOutPerM / displayName
+     */
+    fun updateModel(providerId: String, modelId: String, patchJson: String): String
+
+    /** 批量设置模型 enabled（一次开关多个） */
+    fun setModelsEnabled(providerId: String, modelIdsJson: String, enabled: Boolean): String
+
+    /** 保存规则（传入完整规则 JSON；id 存在则覆盖） */
+    fun saveRule(ruleJson: String): String
+
+    /** 删除规则 */
+    fun deleteRule(ruleId: String): String
+
+    /** 保存虚拟模型（传入完整 JSON；name 存在则覆盖） */
+    fun saveVirtualModel(vmJson: String): String
+
+    /** 删除虚拟模型 */
+    fun deleteVirtualModel(name: String): String
 }
