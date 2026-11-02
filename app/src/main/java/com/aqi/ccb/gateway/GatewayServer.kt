@@ -22,14 +22,21 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class GatewayServer(
     val port: Int,   // 公开：供 GatewayService / diag 读取实际监听端口
-    private var providers: List<Provider>,
-    private var rules: List<RuleSpec>,
+    providers: List<Provider>,
+    rules: List<RuleSpec>,
     private val limiter: RateLimiter,
     private val localAuth: String,
-    private var virtualModels: List<VirtualModel> = emptyList(),
+    virtualModels: List<VirtualModel> = emptyList(),
     private val bindHost: String = "127.0.0.1"
 ) {
     init { require(bindHost in setOf("127.0.0.1", "0.0.0.0")) { "Unsupported bind address" } }
+    private data class LiveConfig(val providers:List<Provider>,val rules:List<RuleSpec>,val virtualModels:List<VirtualModel>,val revision:Long,val keys:Map<String,String>)
+    @Volatile private var live=LiveConfig(providers.toList(),rules.toList(),virtualModels.toList(),0,SecretStore.snapshot())
+    private val providers:List<Provider> get()=live.providers
+    private val rules:List<RuleSpec> get()=live.rules
+    private val virtualModels:List<VirtualModel> get()=live.virtualModels
+    fun configRevisionPublic():Long=live.revision
+
     private val accessPolicy = ServerAccessPolicy(localAuth, loopbackOnly = bindHost == "127.0.0.1")
     private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
     private val running = AtomicBoolean(false)
@@ -102,11 +109,16 @@ class GatewayServer(
     /** 启动时刻 */
     @Volatile var startedAtMs: Long = 0L
 
+    @Synchronized
     fun update(providers: List<Provider>, rules: List<RuleSpec>,
-               virtualModels: List<VirtualModel>? = null) {
-        this.providers = providers
-        this.rules = rules
-        virtualModels?.let { this.virtualModels = it }
+               virtualModels: List<VirtualModel>? = null, revision:Long=live.revision+1,
+               keys:Map<String,String> = SecretStore.snapshot()) {
+        require(revision >= live.revision) { "Stale runtime config revision" }
+        require(providers.map{it.id}.distinct().size==providers.size) { "Duplicate provider id" }
+        require(rules.map{it.id}.distinct().size==rules.size) { "Duplicate rule id" }
+        val next=LiveConfig(providers.toList(),rules.toList(),virtualModels?.toList()?:live.virtualModels,revision,keys.toMap())
+        limiter.updatePolicies(next.providers.filter{it.enabled}.associate{it.id to it.ratePolicy})
+        live=next
     }
 
     fun start(): Boolean {
@@ -261,6 +273,10 @@ class GatewayServer(
      * 虚拟模型排在最前，方便客户端优先看到聚合入口。
      */
     private fun handleModels(output: OutputStream, reqId: String) {
+        val config=synchronized(this){live}
+        val providers=config.providers
+        val rules=config.rules
+        val virtualModels=config.virtualModels
         val vNames = virtualModels.filter { it.enabled }.map { it.name }
         val ids = LinkedHashSet<String>()
         // 虚拟模型优先（聚合入口）
@@ -283,6 +299,10 @@ class GatewayServer(
     }
 
     private fun handleChat(output: OutputStream, reqId: String, body: ByteArray) {
+        val config=synchronized(this){live}
+        val providers=config.providers
+        val rules=config.rules
+        val virtualModels=config.virtualModels
         val reqStart = System.currentTimeMillis()
         val bodyStr = String(body, Charsets.UTF_8)
         val modelId = extractJsonString(bodyStr, "model") ?: ""
@@ -386,16 +406,21 @@ class GatewayServer(
         }
 
         var lastErr: String? = null
+        var upstreamAttempted=false
+        var retryWaitMs=0.0
         for (c in ordered) {
-            val permit = limiter.acquire(c.p.id)
+            val permit = synchronized(this) { limiter.acquire(c.p.id, rule.rateLimitOverride[c.p.id]) }
             if (!permit.ok) {
                 GateLog.rateLimited(reqId, c.p.id, permit.waitMs)
                 lastErr = "rate_limited:${c.p.id}:${permit.reason}"
+                retryWaitMs=maxOf(retryWaitMs,permit.waitMs)
                 continue
             }
             val at = System.currentTimeMillis()
             try {
-                val conn = openUpstream(c, transformed, targetModelId)
+                if(permit.waitMs>0)Thread.sleep(kotlin.math.ceil(permit.waitMs).toLong())
+                upstreamAttempted=true
+                val conn = openUpstream(c, transformed, targetModelId, config.keys[c.p.apiKeyRef].orEmpty())
                 val code = conn.responseCode
                 if (code in 200..299) {
                     val latency = (System.currentTimeMillis() - at).toDouble()
@@ -410,7 +435,7 @@ class GatewayServer(
                         c.p.openUntilMs = 0L
                     }
                     c.p.lastUsedMs = System.currentTimeMillis()
-                    limiter.noteSuccess(c.p.id)   // 成功即重置软限流退避
+                    limiter.noteSuccess(c.p.id, permit.cooldownGeneration)   // 成功即重置软限流退避
                     latestRoute = c.m.modelId + "@" + c.p.id
                     GateLog.attempt(reqId, c.p.id, modelId, true, latency, code, null)
                     relay(output, conn, stream)
@@ -443,45 +468,8 @@ class GatewayServer(
                     }
                     // ---- 参数自动修复：400/422 + 文案指向参数问题时，改名重试一次 ----
                     // 照 wb.apk 的 "max_tokens rejected -> rewritten, retrying in place"
-                    if ((code == 400 || code == 422) && errBody != null) {
-                        val fix = RequestTransform.autoFixParams(transformed.body, errBody)
-                        if (fix != null) {
-                            val fixedBody = fix.first
-                            val fixDesc = fix.second
-                            GateLog.warn(
-                                "transform",
-                                "auto_fix provider=" + c.p.id + " " + fixDesc + " retrying"
-                            )
-                            runCatching {
-                                conn.disconnect()
-                                val retryConn = openUpstream(
-                                    c, transformed.copy(body = fixedBody), targetModelId
-                                )
-                                val retryCode = retryConn.responseCode
-                                if (retryCode in 200..299) {
-                                    c.p.errors = 0
-                                    limiter.noteSuccess(c.p.id)
-                                    latestRoute = c.m.modelId + "@" + c.p.id
-                                    GateLog.attempt(
-                                        reqId, c.p.id, modelId, true,
-                                        (System.currentTimeMillis() - at).toDouble(),
-                                        retryCode, null
-                                    )
-                                    relay(output, retryConn, stream)
-                                    GateLog.requestEnd(
-                                        reqId, true, c.p.id,
-                                        (System.currentTimeMillis() - reqStart).toDouble(),
-                                        c.why + listOf("auto_fix:" + fixDesc)
-                                    )
-                                    totalOk++
-                                    return
-                                } else {
-                                    try { retryConn.disconnect() } catch (_: Exception) {}
-                                }
-                            }
-                        }
-                    }
-
+                    // Automatic request mutation/retry is disabled: a retry must acquire its own permit
+                    // and preserve the caller's requested semantics (handled by the request-lifecycle phase).
                     GateLog.attempt(reqId, c.p.id, modelId, false, latency, code, errBody?.take(200))
                     lastErr = "http_$code"
                     conn.disconnect()
@@ -497,6 +485,14 @@ class GatewayServer(
             }
         }
 
+        if(!upstreamAttempted && lastErr?.startsWith("rate_limited:")==true) {
+            localRejects++
+            GateLog.requestEnd(reqId,false,"-",(System.currentTimeMillis()-reqStart).toDouble(),listOf("local_rate_limit"))
+            writeJson(output,429,org.json.JSONObject().put("error",org.json.JSONObject()
+                .put("message","All eligible providers are locally rate limited")
+                .put("type","rate_limit").put("retryAfterMs",kotlin.math.ceil(retryWaitMs).toLong())).toString())
+            return
+        }
         val failReason = lastErr ?: "unknown"
         totalFail++
         noteFailureTs()   // 记入失败窗口，供«中断»状态判定
@@ -515,6 +511,7 @@ class GatewayServer(
         c: Cand,
         tr: TransformedRequest,
         targetModelId: String,
+        apiKey: String,
     ): HttpURLConnection {
         val base = c.p.baseUrl.trimEnd('/')
         val url = URL("$base/chat/completions")
@@ -532,7 +529,7 @@ class GatewayServer(
             if (v.isNotEmpty()) conn.setRequestProperty(k, v)
         }
 
-        val key = SecretStore.resolve(c.p)
+        val key = apiKey
         if (key.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $key")
 
         // 虚拟模型命中：把 body 里的 model 改写成该 member 的真实 modelId
@@ -621,11 +618,16 @@ class GatewayServer(
      * 暴露：日志目录、各配置文件路径与条目数、设置快照、限流实时状态。
      */
     private fun diagJson(): String {
+        val config=synchronized(this){live}
+        val providers=config.providers
+        val rules=config.rules
+        val virtualModels=config.virtualModels
         val sb = StringBuilder()
         sb.append("{\"running\":").append(running.get())
         sb.append(",\"port\":").append(port)
         sb.append(",\"logDir\":\"").append(esc(esc(logDirPath))).append("\"")
         sb.append(",\"configDir\":\"").append(esc(esc(configDirPath))).append("\"")
+        sb.append(",\"configRevision\":").append(config.revision)
         sb.append(",\"providers\":").append(providers.size)
         sb.append(",\"rules\":").append(rules.size)
         sb.append(",\"virtualModels\":").append(virtualModels.size)
@@ -687,9 +689,9 @@ class GatewayServer(
             sb.append(",\"breaker\":\"").append(p.breaker).append("\"")
             sb.append(",\"errors\":").append(p.errors)
             sb.append(",\"models\":").append(p.models.size)
-            sb.append(",\"ratePerMin\":").append(p.ratePolicy.ratePerMin)
-            sb.append(",\"minIntervalMs\":").append(p.ratePolicy.minIntervalMs)
-            sb.append(",\"maxInflight\":").append(p.ratePolicy.maxInflight)
+            sb.append(",\"ratePerMin\":").append(limiter.policyOf(p.id).ratePerMin)
+            sb.append(",\"minIntervalMs\":").append(limiter.policyOf(p.id).minIntervalMs)
+            sb.append(",\"maxInflight\":").append(limiter.policyOf(p.id).maxInflight)
             sb.append("}")
         }
         sb.append("]}")
@@ -701,6 +703,10 @@ class GatewayServer(
     @Volatile var configDirPath: String = ""
 
     private fun statusJson(): String {
+        val config=synchronized(this){live}
+        val providers=config.providers
+        val rules=config.rules
+        val virtualModels=config.virtualModels
         val ps = providers.joinToString(",") { p ->
             """{"id":"${p.id}","enabled":${p.enabled},"tier":"${p.tier}","errors":${p.errors},""" +
             """"breaker":"${p.breaker}","lat":${"%.0f".format(p.latEwma)},""" +
@@ -835,8 +841,10 @@ class GatewayServer(
 
 /** API Key 解析：契约里只存 apiKeyRef，实际密钥由调用方注入 */
 object SecretStore {
-    private val map = HashMap<String, String>()
-    fun put(ref: String, key: String) { map[ref] = key }
-    fun resolve(p: Provider): String = map[p.apiKeyRef] ?: ""
-    fun clear() = map.clear()
+    @Volatile private var map:Map<String,String> = emptyMap()
+    @Synchronized fun put(ref:String,key:String) { map=map+(ref to key) }
+    fun resolve(p:Provider):String=map[p.apiKeyRef]?:""
+    @Synchronized fun replace(keys:Map<String,String>) { map=keys.toMap() }
+    fun snapshot():Map<String,String> = map
+    @Synchronized fun clear() { map=emptyMap() }
 }

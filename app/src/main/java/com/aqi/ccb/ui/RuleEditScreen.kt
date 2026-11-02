@@ -41,6 +41,8 @@ import androidx.compose.ui.unit.dp
  */
 data class RuleDraft(
     val id: String = "default",
+    val originalJson: String = "",
+    val configRevision: Long? = null,
     val name: String = "默认规则",
     val selectedOps: List<String> = listOf("breaker_filter", "fastest_first"),
     val executeOp: String = "first",
@@ -138,7 +140,7 @@ fun RuleEditScreen(
                 textFieldItem(
                     label = "规则名",
                     value = draft.name,
-                    onValueChange = { onDraftChange(draft.copy(id = it.ifBlank { "default" }, name = it)) },
+                    onValueChange = { onDraftChange(draft.copy(name = it)) },
                 )
                 switchItem(
                     checked = draft.enabled,

@@ -10,34 +10,19 @@ import com.aqi.ccb.gateway.GateLog
  */
 object VirtualModelRepo {
 
-    fun list(context: Context): List<VirtualModelDraft> =
-        VirtualModelStore.load(context).map { vm ->
-            VirtualModelDraft(
-                name = vm.name,
-                description = vm.description,
-                ruleId = vm.ruleId,
-                enabled = vm.enabled,
-                members = vm.members.map { "${it.providerId}|${it.modelId}" },
-                transforms = vm.transforms,
-            )
-        }
+    fun list(context:Context):List<VirtualModelDraft> {
+        val state=com.aqi.ccb.gateway.ConfigStore.read(context)
+        return state.virtualModels.map{VirtualModelDraft.fromJson(it).copy(configRevision=state.revision)}
+    }
 
     fun save(context: Context, draft: VirtualModelDraft): Boolean {
         if (!draft.isComplete) return false
-        val all = VirtualModelStore.load(context).toMutableList()
-        val vm = VirtualModel.fromJson(draft.toJson())
-        val idx = all.indexOfFirst { it.name == draft.name }
-        if (idx >= 0) all[idx] = vm else all.add(vm)
-        VirtualModelStore.save(context, all)
-        GateLog.info("vmodel", "saved name=${draft.name} members=${draft.members.size}")
+        com.aqi.ccb.gateway.ConfigCommands.saveVirtualModel(context, draft.toJson(), draft.configRevision)
         return true
     }
 
     fun delete(context: Context, name: String) {
-        val all = VirtualModelStore.load(context).toMutableList()
-        all.removeAll { it.name == name }
-        VirtualModelStore.save(context, all)
-        GateLog.info("vmodel", "deleted name=$name")
+        com.aqi.ccb.gateway.ConfigCommands.deleteVirtualModel(context, name)
     }
 
     /** providerId -> (providerName, modelIds)，供勾选页展示 */

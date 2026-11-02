@@ -66,20 +66,20 @@ data class ModelInfo(
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("modelId", modelId)
-        if (displayName.isNotEmpty()) put("displayName", displayName)
-        if (contextLength > 0) put("contextLength", contextLength)
-        if (abilities.isNotEmpty()) put("abilities", JSONArray(abilities))
+        put("displayName", displayName)
+        put("contextLength", contextLength)
+        put("abilities", JSONArray(abilities))
         available?.let { put("available", it) }
         if (latencyMs >= 0) put("latencyMs", latencyMs)
         if (lastError.isNotEmpty()) put("lastError", lastError)
         if (testedAt > 0) put("testedAt", testedAt)
         put("enabled", enabled)
         put("type", type)
-        if (inputModalities.isNotEmpty()) put("inputModalities", JSONArray(inputModalities))
-        if (outputModalities.isNotEmpty()) put("outputModalities", JSONArray(outputModalities))
-        if (tools.isNotEmpty()) put("tools", JSONArray(tools))
-        if (priceInPerM > 0) put("priceInPerM", priceInPerM)
-        if (priceOutPerM > 0) put("priceOutPerM", priceOutPerM)
+        put("inputModalities", JSONArray(inputModalities))
+        put("outputModalities", JSONArray(outputModalities))
+        put("tools", JSONArray(tools))
+        put("priceInPerM", priceInPerM)
+        put("priceOutPerM", priceOutPerM)
         nonStreaming?.let { put("nonStreaming", it) }
         streaming?.let { put("streaming", it) }
         toolCall?.let { put("toolCall", it) }

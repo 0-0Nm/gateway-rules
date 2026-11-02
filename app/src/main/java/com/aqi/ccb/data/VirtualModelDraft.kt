@@ -9,6 +9,8 @@ import org.json.JSONObject
  */
 data class VirtualModelDraft(
     val name: String = "",
+    val configRevision: Long? = null,
+    val originalJson: String = "",
     val description: String = "",
     val ruleId: String = "default",
     val enabled: Boolean = true,
@@ -29,17 +31,14 @@ data class VirtualModelDraft(
                 transforms.forEach { put(it.toJson()) }
             })
         }
+        val old=if(originalJson.isNotBlank())JSONObject(originalJson).optJSONArray("members") else null
         put("members", JSONArray().apply {
-            members.forEachIndexed { idx, m ->
-                val parts = m.split('|')
-                if (parts.size >= 2) {
-                    put(JSONObject().apply {
-                        put("providerId", parts[0])
-                        put("modelId", parts[1])
-                        put("priority", idx)
-                        put("weight", 1.0)
-                    })
-                }
+            members.forEachIndexed { index,key ->
+                val parts=key.split('|',limit=2)
+                require(parts.size==2 && parts.all{it.isNotBlank()}) { "Invalid member" }
+                val previous=old?.let{arr->(0 until arr.length()).map{arr.getJSONObject(it)}.firstOrNull{it.optString("providerId")==parts[0]&&it.optString("modelId")==parts[1]}}
+                put((previous?.let{JSONObject(it.toString())}?:JSONObject().put("weight",1.0))
+                    .put("providerId",parts[0]).put("modelId",parts[1]).put("priority",index))
             }
         })
     }
@@ -56,6 +55,7 @@ data class VirtualModelDraft(
                 }
             } ?: emptyList()
             return VirtualModelDraft(
+                originalJson = o.toString(),
                 transforms = com.aqi.ccb.gateway.TransformSpec
                     .parseList(o.optJSONArray("transforms")),
                 name = o.optString("name", ""),

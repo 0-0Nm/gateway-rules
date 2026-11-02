@@ -140,7 +140,7 @@ class GatewayService : Service() {
         val port = intent?.getIntExtra("port", configuredPort) ?: configuredPort
         if (port !in 1024..65535) { stopSelf(); return START_NOT_STICKY }
         val bindHost = if (com.aqi.ccb.data.AppSettings.gatewayLanEnabled(this)) "0.0.0.0" else "127.0.0.1"
-        com.aqi.ccb.data.ProviderRepo.warmUpSecrets(this)
+        GatewayRuntime.configurePublisher()
 
         createChannel()
         startForeground(NOTIF_ID, buildNotif("网关 @ $bindHost:$port · 需访问令牌"))
@@ -150,9 +150,15 @@ class GatewayService : Service() {
         current?.stop()
         current = null
 
-        val providers = com.aqi.ccb.data.ProviderRepo.runtimeProviders(this)
-        val rules = com.aqi.ccb.data.ProviderRepo.runtimeRules(this)
-        val vmodels = VirtualModelStore.load(this)
+        val state = try { ConfigStore.read(this) } catch (e: Exception) {
+            notifyState(false,0,"配置无效："+e.javaClass.simpleName)
+            releaseWakeLock();stopForeground(STOP_FOREGROUND_REMOVE);stopSelf()
+            return START_NOT_STICKY
+        }
+        val providers=ConfigStore.toProviders(state.providers)
+        val rules=ConfigStore.toRules(state.rules)
+        val vmodels=state.virtualModels.map{VirtualModel.fromJson(it)}
+        SecretStore.replace(state.keys)
 
         // 限流策略按 provider 各自配置组装
         val policies = HashMap<String, RatePolicy>()
@@ -166,6 +172,7 @@ class GatewayService : Service() {
         srv.configDirPath = filesDir.absolutePath
 
         val ok = try {
+            srv.update(providers,rules,vmodels,state.revision,state.keys)
             srv.start()
         } catch (e: Exception) {
             GateLog.error("gw", "service bind failed port=$port", e)
@@ -174,6 +181,7 @@ class GatewayService : Service() {
 
         if (ok) {
             current = srv
+            ConfigStore.applyCurrent(this) // catch any generation committed during startup
             notifyState(true, srv.port, null)
             GateLog.info("gw", "service running on " + bindHost + ":" + srv.port + " (foreground)")
         } else {

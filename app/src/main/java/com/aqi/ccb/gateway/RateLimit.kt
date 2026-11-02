@@ -17,11 +17,11 @@ import kotlin.random.Random
  * peek() 为只读快照，供 explain 使用，不消耗令牌。
  */
 data class RatePolicy(
-    val ratePerMin: Double = 60.0,   // <=0 表示不限速
-    val burst: Int = 5,
-    val minIntervalMs: Double = 0.0,
-    val jitterMs: Double = 0.0,
-    val maxInflight: Int = 4,
+    val ratePerMin: Double = 30.0,   // <=0 表示不限速
+    val burst: Int = 3,
+    val minIntervalMs: Double = 800.0,
+    val jitterMs: Double = 150.0,
+    val maxInflight: Int = 2,
     /**
      * 软限流：收到上游 429/限流后整个 provider 休息的时长（秒）。
      * 连续被限流时按 2 倍指数退避，封顶 softRateMaxSec。
@@ -32,6 +32,8 @@ data class RatePolicy(
     val softRateMaxSec: Double = 7200.0,
 ) {
     init {
+        require(listOf(ratePerMin,minIntervalMs,jitterMs,softRateSec,softRateMaxSec).all { it.isFinite() && it >= 0 }) { "Rate values must be finite and nonnegative" }
+        require(softRateMaxSec >= softRateSec || softRateMaxSec == 0.0) { "Invalid soft rate cap" }
         require(ratePerMin >= 0) { "ratePerMin must be >= 0" }
         require(burst >= 1) { "burst must be >= 1" }
         require(minIntervalMs >= 0) { "minIntervalMs must be >= 0" }
@@ -41,176 +43,96 @@ data class RatePolicy(
 
     companion object {
         fun fromJson(m: Map<String, Any?>): RatePolicy = RatePolicy(
-            ratePerMin = (m["ratePerMin"] as? Number)?.toDouble() ?: 60.0,
-            burst = (m["burst"] as? Number)?.toInt() ?: 5,
-            minIntervalMs = (m["minIntervalMs"] as? Number)?.toDouble() ?: 0.0,
-            jitterMs = (m["jitterMs"] as? Number)?.toDouble() ?: 0.0,
-            maxInflight = (m["maxInflight"] as? Number)?.toInt() ?: 4,
+            ratePerMin = (m["ratePerMin"] as? Number)?.toDouble() ?: 30.0,
+            burst = (m["burst"] as? Number)?.toInt() ?: 3,
+            minIntervalMs = (m["minIntervalMs"] as? Number)?.toDouble() ?: 800.0,
+            jitterMs = (m["jitterMs"] as? Number)?.toDouble() ?: 150.0,
+            maxInflight = (m["maxInflight"] as? Number)?.toInt() ?: 2,
             softRateSec = (m["softRateSec"] as? Number)?.toDouble() ?: 600.0,
             softRateMaxSec = (m["softRateMaxSec"] as? Number)?.toDouble() ?: 7200.0,
         )
     }
 }
 
-/** 准入结果：ok=是否可发；waitMs=建议等待；reason=原因 */
-data class Permit(val ok: Boolean, val waitMs: Double, val reason: String)
-
+/** A permit owns one in-flight slot, and remembers the cooldown generation at admission. */
+data class Permit(val ok: Boolean, val waitMs: Double, val reason: String, val cooldownGeneration: Long = 0)
 private class Bucket(p: RatePolicy) {
-    var tokens: Double = p.burst.toDouble()
-    var lastRefill: Long = System.nanoTime()
-    var lastSend: Long = 0L
-    var inflight: Int = 0
-
-    // ---- 软限流状态（照 wb.apk 的 soft_rate_sec / soft_rate_max_sec）----
-    /** 软限流截止时刻（毫秒时间戳），0 = 未限流 */
-    var softUntilMs: Long = 0L
-    /** 连续被限流次数，用于指数退避 */
-    var softStreak: Int = 0
+    var tokens=p.burst.toDouble()
+    var lastRefill=System.nanoTime()
+    var lastSend=0L
+    var inflight=0
+    var softUntilMs=0L
+    var softStreak=0
+    var cooldownGeneration=0L
 }
-
-class RateLimiter(
-    private val policies: Map<String, RatePolicy> = emptyMap(),
-    private val default: RatePolicy = RatePolicy()
-) {
-    private val buckets = HashMap<String, Bucket>()
-
-    fun policyOf(providerId: String): RatePolicy = policies[providerId] ?: default
-
-    @Synchronized
-    private fun bucketOf(providerId: String): Bucket =
-        buckets.getOrPut(providerId) { Bucket(policyOf(providerId)) }
-
-    private fun refill(b: Bucket, p: RatePolicy) {
-        if (p.ratePerMin <= 0) return
-        val now = System.nanoTime()
-        val dtSec = (now - b.lastRefill) / 1_000_000_000.0
-        if (dtSec > 0) {
-            val rate = p.ratePerMin / 60.0
-            b.tokens = min(p.burst.toDouble(), b.tokens + dtSec * rate)
-            b.lastRefill = now
-        }
+class RateLimiter(policies: Map<String,RatePolicy> = emptyMap(),private val default:RatePolicy=RatePolicy()) {
+    private var policies=policies.toMap()
+    private val buckets=HashMap<String,Bucket>()
+    @Synchronized fun policyOf(id:String):RatePolicy=policies[id]?:default
+    private fun bucket(id:String)=buckets.getOrPut(id){Bucket(policyOf(id))}
+    private fun refill(b:Bucket,p:RatePolicy,now:Long=System.nanoTime()) {
+        val elapsed=((now-b.lastRefill)/1_000_000_000.0).coerceAtLeast(0.0)
+        if(p.ratePerMin>0)b.tokens=min(p.burst.toDouble(),b.tokens+elapsed*p.ratePerMin/60.0)
+        b.lastRefill=now
     }
-
-    /** 只读快照，不消耗令牌。 */
-    @Synchronized
-    fun peek(providerId: String): Map<String, Any?> {
-        val p = policyOf(providerId)
-        val b = buckets[providerId]
-        if (b == null) {
-            return mapOf("provider" to providerId, "tokens" to p.burst.toDouble(),
-                "inflight" to 0, "can_send" to true, "wait_ms" to 0.0)
+    /** Atomic policy replacement without resetting reservations, debt or cooldowns. */
+    @Synchronized fun updatePolicies(next:Map<String,RatePolicy>) {
+        val now=System.nanoTime()
+        buckets.forEach{(id,b)->
+            refill(b,policyOf(id),now)
+            next[id]?.let{b.tokens=min(b.tokens,it.burst.toDouble())}
         }
-        var tokens = b.tokens
-        if (p.ratePerMin > 0) {
-            val dtSec = (System.nanoTime() - b.lastRefill) / 1_000_000_000.0
-            tokens = min(p.burst.toDouble(), b.tokens + dtSec * (p.ratePerMin / 60.0))
-        }
-        val tokensOk = p.ratePerMin <= 0 || tokens >= 1.0
-        val inflightOk = b.inflight < p.maxInflight
-        var waitMs = 0.0
-        var gapOk = true
-        if (p.minIntervalMs > 0 && b.lastSend > 0) {
-            val elapsedMs = (System.nanoTime() - b.lastSend) / 1_000_000.0
-            if (elapsedMs < p.minIntervalMs) {
-                gapOk = false
-                waitMs = p.minIntervalMs - elapsedMs
-            }
-        }
-        return mapOf(
-            "provider" to providerId, "tokens" to tokens, "inflight" to b.inflight,
-            "can_send" to (tokensOk && inflightOk && gapOk), "wait_ms" to waitMs
-        )
+        policies=next.toMap()
     }
-
-    /**
-     * 尝试取得发送许可。
-     * 不阻塞：返回 ok=false 时由调用方决定是等待重试还是换路。
-     */
-    @Synchronized
-    fun acquire(providerId: String): Permit {
-        val p = policyOf(providerId)
-        val b = bucketOf(providerId)
-        refill(b, p)
-
-        // 软限流：被上游限流后整个 provider 休息，期间拒绝新请求
-        val nowMs = System.currentTimeMillis()
-        if (b.softUntilMs > nowMs) {
-            val remainMs = (b.softUntilMs - nowMs).toDouble()
-            return Permit(
-                false, remainMs,
-                "soft_rest(" + (remainMs / 1000).toInt() + "s left, streak=" + b.softStreak + ")"
-            )
-        }
-
-        if (b.inflight >= p.maxInflight) {
-            return Permit(false, 0.0, "max_inflight(${p.maxInflight})")
-        }
-
-        var needWaitMs = 0.0
-        if (p.ratePerMin > 0 && b.tokens < 1.0) {
-            val rate = p.ratePerMin / 60.0
-            needWaitMs = max(needWaitMs, (1.0 - b.tokens) / rate * 1000.0)
-        }
-        if (p.minIntervalMs > 0 && b.lastSend > 0) {
-            val elapsedMs = (System.nanoTime() - b.lastSend) / 1_000_000.0
-            if (elapsedMs < p.minIntervalMs) {
-                needWaitMs = max(needWaitMs, p.minIntervalMs - elapsedMs)
-            }
-        }
-        if (needWaitMs > 0.0) {
-            return Permit(false, needWaitMs, "rate_limited")
-        }
-
-        if (p.ratePerMin > 0) b.tokens = max(0.0, b.tokens - 1.0)
-        b.lastSend = System.nanoTime()
-        b.inflight += 1
-
-        val jitter = if (p.jitterMs > 0) Random.nextDouble(0.0, p.jitterMs) else 0.0
-        return Permit(true, jitter, "ok")
+    private fun effective(id:String,override:RatePolicy?):RatePolicy {
+        val p=policyOf(id);val o=override?:return p
+        fun stricter(a:Double,b:Double):Double=when {a==0.0->b;b==0.0->a;else->min(a,b)}
+        return p.copy(ratePerMin=stricter(p.ratePerMin,o.ratePerMin),burst=min(p.burst,o.burst),
+            minIntervalMs=max(p.minIntervalMs,o.minIntervalMs),jitterMs=max(p.jitterMs,o.jitterMs),maxInflight=min(p.maxInflight,o.maxInflight))
     }
-
-    /** 请求结束后必须归还并发槽。 */
-    @Synchronized
-    fun release(providerId: String) {
-        buckets[providerId]?.let { if (it.inflight > 0) it.inflight -= 1 }
+    private fun inspect(b:Bucket,p:RatePolicy,tokens:Double,nowNs:Long):Permit {
+        val remain=b.softUntilMs-System.currentTimeMillis()
+        if(remain>0)return Permit(false,remain.toDouble(),"soft_rest",b.cooldownGeneration)
+        if(b.inflight>=p.maxInflight)return Permit(false,0.0,"max_inflight",b.cooldownGeneration)
+        var wait=0.0
+        if(p.ratePerMin>0 && tokens<1.0)wait=(1.0-tokens)/(p.ratePerMin/60.0)*1000.0
+        if(b.lastSend!=0L)wait=max(wait,p.minIntervalMs-(nowNs-b.lastSend)/1_000_000.0)
+        return Permit(wait<=0.0,wait.coerceAtLeast(0.0),if(wait>0)"rate_limited" else "ok",b.cooldownGeneration)
     }
-
-    /**
-     * 记录一次上游限流（429 / 明确限流文案）。
-     * 休息时长 = softRateSec * 2^(streak-1)，封顶 softRateMaxSec。
-     *
-     * 这是 wb.apk 的 soft_rate_sec / soft_rate_max_sec 逻辑：
-     * 首次歇 10 分钟，连续被限则 20→40→80 分钟，最多 2 小时。
-     */
-    @Synchronized
-    fun noteSoftRateLimit(providerId: String): Double {
-        val p = policyOf(providerId)
-        if (p.softRateSec <= 0) return 0.0
-        val b = bucketOf(providerId)
-        b.softStreak += 1
-        val base = p.softRateSec
-        val cap = if (p.softRateMaxSec > 0) p.softRateMaxSec else base
-        val factor = Math.pow(2.0, (b.softStreak - 1).toDouble())
-        val restSec = Math.min(base * factor, cap)
-        b.softUntilMs = System.currentTimeMillis() + (restSec * 1000).toLong()
-        return restSec
+    @Synchronized fun peek(id:String):Map<String,Any?> {
+        val p=policyOf(id);val b=buckets[id]
+        if(b==null)return mapOf("provider" to id,"tokens" to p.burst.toDouble(),"inflight" to 0,"can_send" to true,"wait_ms" to 0.0)
+        val now=System.nanoTime()
+        val tokens=if(p.ratePerMin>0)min(p.burst.toDouble(),b.tokens+((now-b.lastRefill)/1_000_000_000.0).coerceAtLeast(0.0)*p.ratePerMin/60.0) else b.tokens
+        val permit=inspect(b,p,tokens,now)
+        return mapOf("provider" to id,"tokens" to tokens,"inflight" to b.inflight,"can_send" to permit.ok,"wait_ms" to permit.waitMs,"reason" to permit.reason)
     }
-
-    /** 成功一次后重置软限流退避（streak 归零） */
-    @Synchronized
-    fun noteSuccess(providerId: String) {
-        val b = buckets[providerId] ?: return
-        if (b.softStreak != 0 || b.softUntilMs != 0L) {
-            b.softStreak = 0
-            b.softUntilMs = 0L
-        }
+    @Synchronized fun acquire(id:String,override:RatePolicy?=null):Permit {
+        // Removed/disabled providers cannot continue producing new attempts after a reload.
+        if(id !in policies)return Permit(false,0.0,"provider_removed")
+        val p=effective(id,override);val b=bucket(id);refill(b,p)
+        b.tokens=min(b.tokens,p.burst.toDouble())
+        val permit=inspect(b,p,b.tokens,System.nanoTime());if(!permit.ok)return permit
+        if(p.ratePerMin>0)b.tokens=max(0.0,b.tokens-1.0)
+        val jitter=if(p.jitterMs>0)Random.nextDouble(0.0,p.jitterMs)else 0.0
+        b.lastSend=System.nanoTime()+(jitter*1_000_000.0).toLong();b.inflight++
+        return Permit(true,jitter,"ok",b.cooldownGeneration)
     }
-
-    /** 只读：当前软限流剩余秒数（0=未限流） */
-    @Synchronized
-    fun softRestRemainingSec(providerId: String): Long {
-        val b = buckets[providerId] ?: return 0L
-        val ms = b.softUntilMs - System.currentTimeMillis()
-        return if (ms > 0) ms / 1000 else 0L
+    @Synchronized fun release(id:String){buckets[id]?.let{if(it.inflight>0)it.inflight--}}
+    @Synchronized fun noteSoftRateLimit(id:String):Double {
+        val p=policyOf(id);if(p.softRateSec<=0)return 0.0
+        val b=bucket(id);b.softStreak=(b.softStreak+1).coerceAtMost(63);b.cooldownGeneration++
+        val cap=if(p.softRateMaxSec>0)p.softRateMaxSec else p.softRateSec
+        val sec=min(p.softRateSec*Math.pow(2.0,(b.softStreak-1).toDouble()),cap)
+        b.softUntilMs=System.currentTimeMillis()+(sec*1000).toLong();return sec
     }
+    @Synchronized fun noteSuccess(id:String,generation:Long?=null) {
+        val b=buckets[id]?:return
+        // An older successful request must not cancel a newer request's 429 cooldown.
+        if(generation!=null && generation!=b.cooldownGeneration)return
+        if(b.softUntilMs>System.currentTimeMillis())return
+        b.softStreak=0;b.softUntilMs=0
+    }
+    @Synchronized fun softRestRemainingSec(id:String):Long =
+        ((buckets[id]?.softUntilMs?:0L)-System.currentTimeMillis()).coerceAtLeast(0)/1000
 }

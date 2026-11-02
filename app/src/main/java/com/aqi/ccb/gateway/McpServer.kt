@@ -301,8 +301,8 @@ class McpServer(
                 put("properties", JSONObject().apply {
                     put("providerId", str("提供商 ID 或 name 派生出的 idOr"))
                     put("patch", obj("要修改的字段。可用：name baseUrl apiKey enabled tier " +
-                        "weight quota ratePerMin burst minIntervalMs jitterMs " +
-                        "maxInflight suffixStyle"))
+                        "weight quota ratePerMin burst minIntervalMs jitterMs expectedRevision " +
+                        "maxInflight softRateSec softRateMaxSec suffixStyle"))
                 })
                 put("required", JSONArray().put("providerId").put("patch"))
             }
@@ -332,7 +332,7 @@ class McpServer(
                     put("modelId", str("模型 ID"))
                     put("patch", obj("要修改的字段。可用：displayName enabled type abilities " +
                         "inputModalities outputModalities tools contextLength " +
-                        "priceInPerM priceOutPerM。数组字段传 JSON 数组。"))
+                        "priceInPerM priceOutPerM expectedRevision。数组字段传 JSON 数组。"))
                 })
                 put("required", JSONArray().put("providerId").put("modelId").put("patch"))
             }
@@ -451,6 +451,21 @@ class McpServer(
         val cfg = configProvider()
 
         val text: String = try {
+            val required=when(name) {
+                "gw_update_provider" -> mapOf("providerId" to "string","patch" to "object")
+                "gw_delete_provider", "gw_test_models" -> mapOf("providerId" to "string")
+                "gw_update_model" -> mapOf("providerId" to "string","modelId" to "string","patch" to "object")
+                "gw_set_models_enabled" -> mapOf("providerId" to "string","modelIds" to "array","enabled" to "boolean")
+                "gw_save_rule" -> mapOf("rule" to "object")
+                "gw_delete_rule" -> mapOf("ruleId" to "string")
+                "gw_save_virtual_model" -> mapOf("virtualModel" to "object")
+                "gw_delete_virtual_model" -> mapOf("name" to "string")
+                else -> emptyMap()
+            }
+            required.forEach { (key,type) ->
+                val value=args.opt(key)
+                require(when(type){"string"->value is String && value.isNotBlank();"object"->value is JSONObject;"array"->value is JSONArray;"boolean"->value is Boolean;else->false}) { "Invalid or missing argument: $key" }
+            }
             when (name) {
                 "gw_list_providers" -> cfg.listProvidersJson()
                 "gw_add_provider" -> cfg.addProvider(
@@ -490,7 +505,7 @@ class McpServer(
                 else -> """{"error":"unknown tool: $name"}"""
             }
         } catch (e: Exception) {
-            """{"error":"${e.message?.replace("\"", "'")}"}"""
+            JSONObject().put("ok",false).put("code","INVALID_ARGUMENT").put("error",e.message ?: e.javaClass.simpleName).toString()
         }
 
         return JSONObject().apply {
@@ -513,7 +528,7 @@ class McpServer(
         JSONObject().put("type", "object").put("description", desc)
 
     private fun arr2(desc: String): JSONObject =
-        JSONObject().put("type", "array").put("description", desc)
+        JSONObject().put("type", "array").put("items", JSONObject().put("type", "string")).put("description", desc)
 
     private fun bool(desc: String): JSONObject =
         JSONObject().put("type", "boolean").put("description", desc)

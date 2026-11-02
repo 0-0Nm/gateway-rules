@@ -1,130 +1,83 @@
 package com.aqi.ccb.data
 
 import android.content.Context
-import com.aqi.ccb.gateway.ConfigStore
-import com.aqi.ccb.gateway.GateLog
-import com.aqi.ccb.gateway.Provider
-import com.aqi.ccb.gateway.RuleSpec
-import com.aqi.ccb.gateway.SecretStore
+import com.aqi.ccb.gateway.*
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * 配置仓库：UI 与 运行时对象 之间的唯一通道。
- * 全部读写都走 ConfigStore（providers.json / rules.json / keys.json）。
- */
 object ProviderRepo {
-
     fun list(context: Context): List<ProviderDraft> {
-        // 关键：ProviderDraft.fromJson 不回填 apiKey（避免明文进 UI）。
-        // 但 MCP / 批量测试需要真实密钥，所以这里从 keys.json 回填。
-        val keys = ConfigStore.loadKeys(context)
-        return ConfigStore.loadProviders(context).map { o ->
-            val d = ProviderDraft.fromJson(o)
-            val ref = o.optString("apiKeyRef", "")
-            val key = when {
-                ref.isNotEmpty() && keys.containsKey(ref) -> keys[ref] ?: ""
-                else -> ""
-            }
-            if (key.isNotEmpty()) d.copy(apiKey = key) else d
+        val state=ConfigStore.read(context)
+        return state.providers.map { o ->
+            ProviderDraft.fromJson(o).copy(
+                apiKey=state.keys[o.optString("apiKeyRef", "")] ?: "",
+                configRevision=state.revision,
+            )
         }
     }
-
     fun save(context: Context, draft: ProviderDraft): Boolean {
         if (!draft.isComplete) return false
-        val all = ConfigStore.loadProviders(context)
-        val newJson = draft.toJson()
-        val id = newJson.optString("id")
-        val idx = all.indexOfFirst { it.optString("id") == id }
-        if (idx >= 0) all[idx] = newJson else all.add(newJson)
-        ConfigStore.saveProviders(context, all)
-
-        if (draft.apiKey.isNotEmpty()) {
-            val ref = "ref-$id"
-            SecretStore.put(ref, draft.apiKey)
-            val keys = ConfigStore.loadKeys(context)
-            keys[ref] = draft.apiKey
-            ConfigStore.saveKeys(context, keys)
-        }
+        saveCommitted(context,draft)
         return true
     }
-
-    fun delete(context: Context, id: String) {
-        val all = ConfigStore.loadProviders(context)
-        all.removeAll { it.optString("id") == id }
-        ConfigStore.saveProviders(context, all)
-        SecretStore.clear()
-        ConfigStore.loadKeys(context).forEach { (ref, key) -> SecretStore.put(ref, key) }
-    }
-
-    /** 运行时 Provider 列表；无配置时返回内置 mock 保证可自测 */
-    fun runtimeProviders(context: Context): List<Provider> {
-        val raw = ConfigStore.loadProviders(context)
-        return if (raw.isEmpty()) DemoFallback.providers()
-        else ConfigStore.toProviders(raw)
-    }
-
-    fun runtimeRules(context: Context): List<RuleSpec> {
-        val raw = ConfigStore.loadRules(context)
-        return if (raw.isEmpty()) DemoFallback.rules()
-        else ConfigStore.toRules(raw)
-    }
-
-    /** 恢复持久化密钥到内存（App 启动时调用一次） */
-    fun warmUpSecrets(context: Context) {
-        ConfigStore.loadKeys(context).forEach { (ref, key) -> SecretStore.put(ref, key) }
-    }
-
-    // ---------------- 规则读写 ----------------
-
-    fun listRules(context: Context): List<JSONObject> = ConfigStore.loadRules(context)
-
-    fun saveRule(context: Context, rule: JSONObject) {
-        val all = ConfigStore.loadRules(context)
-        val id = rule.optString("id")
-        val idx = all.indexOfFirst { it.optString("id") == id }
-        if (idx >= 0) all[idx] = rule else all.add(rule)
-        ConfigStore.saveRules(context, all)
-    }
-
-    fun deleteRule(context: Context, id: String) {
-        val all = ConfigStore.loadRules(context)
-        all.removeAll { it.optString("id") == id }
-        ConfigStore.saveRules(context, all)
-    }
-
-    /**
-     * 同步限流参数到 provider。
-     *
-     * 修复：原来无条件覆盖全部 provider —— 你给免费号配 30/min、
-     * 付费号配 120/min，改一次规则全被冲成一个值。
-     * 现在只填充「尚未配置限流」的 provider，已有配置一律保留。
-     *
-     * @return (填充数, 跳过数)
-     */
-    fun syncRateLimit(context: Context, rate: JSONObject): Pair<Int, Int> {
-        val all = ConfigStore.loadProviders(context)
-        if (all.isEmpty()) return 0 to 0
-        var filled = 0
-        var skipped = 0
-        all.forEach { o ->
-            if (o.has("rateLimit") && o.optJSONObject("rateLimit") != null) {
-                skipped++
+    fun saveCommitted(context:Context,draft:ProviderDraft):ConfigStore.Commit {
+        require(draft.isComplete) { "Incomplete provider" }
+        for(value in listOf(draft.ratePerMin,draft.minIntervalMs,draft.jitterMs,draft.weight)) {
+            require(value.toDoubleOrNull()?.let{it.isFinite()&&it>=0}==true) { "Invalid numeric provider value" }
+        }
+        for(value in listOf(draft.burst,draft.maxInflight))require(value.toIntOrNull()?.let{it>0}==true){"Invalid integer limit"}
+        require(draft.quota.isBlank()||draft.quota.toDoubleOrNull()?.let{it.isFinite()&&it>=0}==true){"Invalid quota"}
+        return ConfigStore.transact(context,draft.configRevision) { state ->
+            val id=draft.idOr();val idx=state.providers.indexOfFirst{it.optString("id")==id}
+            if(idx>=0 && draft.configRevision==null)throw ConfigStore.ConfigException("ALREADY_EXISTS","Provider already exists; update by its id")
+            val next=if(idx>=0) JSONObject(state.providers[idx].toString()) else JSONObject()
+            val oldRef=next.optString("apiKeyRef","")
+            val serialized=draft.toJson()
+            val oldRate=next.optJSONObject("rateLimit") ?: JSONObject()
+            val newRate=serialized.getJSONObject("rateLimit")
+            newRate.keys().forEach { k -> oldRate.put(k,newRate.get(k)) }
+            serialized.put("rateLimit",oldRate)
+            val previousModels=next.optJSONArray("models")?:JSONArray()
+            val models=serialized.getJSONArray("models")
+            for(i in 0 until models.length()) {
+                val model=models.getJSONObject(i)
+                val previous=(0 until previousModels.length()).map{previousModels.getJSONObject(it)}.firstOrNull{it.optString("modelId")==model.optString("modelId")}
+                if(previous!=null) {
+                    val merged=JSONObject(previous.toString())
+                    model.keys().forEach{k->merged.put(k,model.get(k))}
+                    models.put(i,merged)
+                }
+            }
+            serialized.keys().forEach{k->next.put(k,serialized.get(k))}
+            // Explicit credential clearing removes reference and old private value in the same commit.
+            if(draft.apiKey.isNotEmpty()) {
+                val ref=oldRef.ifEmpty{"ref-$id"};next.put("apiKeyRef",ref);state.keys[ref]=draft.apiKey
             } else {
-                o.put("rateLimit", rate)
-                filled++
+                next.remove("apiKeyRef")
+                if(oldRef.isNotEmpty() && state.providers.none{it.optString("id")!=id && it.optString("apiKeyRef")==oldRef})state.keys.remove(oldRef)
+            }
+            if(draft.quota.isBlank())next.remove("quota")
+            if(idx>=0)state.providers[idx]=next else state.providers.add(next)
+        }
+    }
+    fun delete(context: Context,id:String) { ConfigCommands.deleteProvider(context,id) }
+    fun runtimeProviders(context: Context): List<Provider> = ConfigStore.toProviders(ConfigStore.read(context).providers)
+    fun runtimeRules(context: Context): List<RuleSpec> = ConfigStore.toRules(ConfigStore.read(context).rules)
+    fun warmUpSecrets(context: Context) { SecretStore.replace(ConfigStore.read(context).keys) }
+    fun listRules(context: Context): List<JSONObject> = ConfigStore.read(context).rules
+    fun saveRule(context: Context,rule:JSONObject) { ConfigCommands.saveRule(context,rule) }
+    fun deleteRule(context: Context,id:String) { ConfigCommands.deleteRule(context,id) }
+    fun syncRateLimit(context: Context,rate:JSONObject): Pair<Int,Int> {
+        var filled=0;var skipped=0
+        ConfigStore.transact(context) { state ->
+            state.providers.forEach { o ->
+                if(o.has("rateLimit"))skipped++ else {o.put("rateLimit",JSONObject(rate.toString()));filled++}
             }
         }
-        ConfigStore.saveProviders(context, all)
-        GateLog.info(
-            "config",
-            "rateLimit fill=$filled skip=$skipped (已有配置不被覆盖)"
-        )
         return filled to skipped
     }
 }
 
-/** 首次运行兜底（真实配置存在时不会用到） */
 object DemoFallback {
     const val LOCAL_AUTH = ""
 

@@ -158,7 +158,10 @@ class MainActivity : ComponentActivity() {
         appLogDir = File(extDir, "logs")
         GateLog.init(appLogDir)
         com.aqi.ccb.ui.UiToast.init(this)
-        ProviderRepo.warmUpSecrets(this)
+        com.aqi.ccb.gateway.GatewayRuntime.configurePublisher()
+        runCatching { ProviderRepo.warmUpSecrets(this) }.onFailure {
+            com.aqi.ccb.ui.UiToast.error("配置读取失败，未使用演示数据替代")
+        }
         // 订阅前台服务的真实状态：UI 端口显示以实际监听为准
         McpService.addListener(mcpStateListener)
         GatewayService.addListener(gwStateListener)
@@ -247,8 +250,8 @@ class MainActivity : ComponentActivity() {
                         isNew = editingProviderIndex < 0,
                         onDraftChange = { providerDraft = it },
                         onBack = { route = "main"; refreshMain() },
-                        onSave = { saveProvider() },
-                        onDelete = if (editingProviderIndex >= 0) ({ deleteProvider() }) else null,
+                        onSave = { configAction { saveProvider() } },
+                        onDelete = if (editingProviderIndex >= 0) ({ configAction { deleteProvider() } }) else null,
                         onTest = { testProvider() },
                         onProbeModels = { probeModels() },
                         onTestAll = { testAllModels() },
@@ -454,16 +457,16 @@ class MainActivity : ComponentActivity() {
                             .ifEmpty { listOf("default") },
                         onDraftChange = { vmDraft = it },
                         onBack = { route = "main"; refreshMain() },
-                        onSave = { saveVirtualModel() },
-                        onDelete = if (editingVmName != null) ({ deleteVirtualModel() }) else null,
+                        onSave = { configAction { saveVirtualModel() } },
+                        onDelete = if (editingVmName != null) ({ configAction { deleteVirtualModel() } }) else null,
                     )
                     "rule" -> RuleEditScreen(
                         draft = ruleDraft,
                         isNew = editingRuleId == null,
                         onDraftChange = { ruleDraft = it },
                         onBack = { route = "main"; refreshMain() },
-                        onSave = { saveRule() },
-                        onDelete = if (editingRuleId != null) ({ deleteRule() }) else null,
+                        onSave = { configAction { saveRule() } },
+                        onDelete = if (editingRuleId != null) ({ configAction { deleteRule() } }) else null,
                     )
                     else -> MainScreen(
                         state = mainState,
@@ -480,7 +483,7 @@ class MainActivity : ComponentActivity() {
                         onPortChange = { mainState = mainState.copy(port = it) },
                         onCopyApiKey = {
                             // 网关当前用 DemoFallback.LOCAL_AUTH；为空表示不鉴权
-                            val key = DemoFallback.LOCAL_AUTH
+                            val key = com.aqi.ccb.gateway.LocalAccessTokens.gateway(this)
                             if (key.isEmpty()) {
                                 com.aqi.ccb.ui.UiToast.show(
                                     "网关未设访问密钥，客户端 API Key 可留空"
@@ -682,6 +685,12 @@ class MainActivity : ComponentActivity() {
     // ==================== 刷新聚合页 ====================
 
     private fun refreshMain() {
+        try { refreshMainChecked() } catch (e: Exception) {
+            mainState=mainState.copy(statusNote="配置读取失败："+e.javaClass.simpleName)
+        }
+    }
+
+    private fun refreshMainChecked() {
         val drafts = ProviderRepo.list(this)
         val ruleJsons = ConfigStore.loadRules(this)
 
@@ -771,12 +780,20 @@ class MainActivity : ComponentActivity() {
     // ==================== 网关 ====================
 
     private fun startGateway() {
+        try { startGatewayChecked() } catch (e: Exception) {
+            mainState=mainState.copy(statusNote="无法启动：配置无效")
+            com.aqi.ccb.ui.UiToast.error("配置校验失败，网关未启动")
+        }
+    }
+
+    private fun startGatewayChecked() {
         if (GatewayService.running) return
         val port = AppSettings.gatewayPort(this)
         val providers = ProviderRepo.runtimeProviders(this)
         val rules = ProviderRepo.runtimeRules(this)
         if (providers.isEmpty() || rules.isEmpty()) {
             mainState = mainState.copy(statusNote = "配置不完整，请先添加提供商与规则")
+            startMcpIfEnabled() // management must be available before the first data-plane configuration
             return
         }
 
@@ -818,6 +835,13 @@ class MainActivity : ComponentActivity() {
         route = "provider"
     }
 
+    private fun configAction(action:()->Unit) {
+        try { action() } catch(e:Exception) {
+            providerTest="保存未完成："+(e.message ?: e.javaClass.simpleName)
+            com.aqi.ccb.ui.UiToast.error(providerTest ?: "配置失败")
+        }
+    }
+
     private fun saveProvider() {
         if (!providerDraft.isComplete) {
             providerTest = "名称 / Base URL / 模型 ID 必填"
@@ -829,18 +853,13 @@ class MainActivity : ComponentActivity() {
             providerTest = null
             route = "main"
             refreshMain()
-            server?.let { srv ->
-                srv.update(ProviderRepo.runtimeProviders(this), ProviderRepo.runtimeRules(this))
-            }
         } else {
             providerTest = "保存失败"
         }
     }
 
     private fun deleteProvider() {
-        val list = ProviderRepo.list(this)
-        if (editingProviderIndex !in list.indices) return
-        ProviderRepo.delete(this, list[editingProviderIndex].idOr())
+        ProviderRepo.delete(this, providerDraft.idOr())
         editingProviderIndex = -1
         providerDraft = ProviderDraft()
         route = "main"
@@ -1072,14 +1091,14 @@ class MainActivity : ComponentActivity() {
     // ==================== 规则 ====================
 
     private fun openRule(id: String) {
-        val all = ConfigStore.loadRules(this)
-        val o = all.firstOrNull { it.optString("id") == id } ?: return
+        val state = ConfigStore.read(this)
+        val o = state.rules.firstOrNull { it.optString("id") == id } ?: return
         editingRuleId = id
-        ruleDraft = ruleJsonToDraft(o)
+        ruleDraft = ruleJsonToDraft(o, state.revision)
         route = "rule"
     }
 
-    private fun ruleJsonToDraft(o: JSONObject): RuleDraft {
+    private fun ruleJsonToDraft(o: JSONObject, revision:Long): RuleDraft {
         val ops = mutableListOf<String>()
         o.optJSONArray("select")?.let { arr ->
             for (i in 0 until arr.length()) {
@@ -1088,6 +1107,8 @@ class MainActivity : ComponentActivity() {
         }
         return RuleDraft(
             id = o.optString("id", "default"),
+            originalJson = o.toString(),
+            configRevision = revision,
             name = o.optString("name", "默认规则"),
             selectedOps = ops,
             executeOp = o.optJSONObject("execute")?.optString("op") ?: "first",
@@ -1098,54 +1119,28 @@ class MainActivity : ComponentActivity() {
 
     private fun saveRule() {
         val d = ruleDraft
-        val sel = JSONArray()
+        val original=if(d.originalJson.isBlank())JSONObject() else JSONObject(d.originalJson)
+        val previous=original.optJSONArray("select") ?: JSONArray()
+        val sel=JSONArray()
         d.selectedOps.forEach { op ->
-            val o = JSONObject().put("op", op)
-            when (op) {
-                "require" -> o.put("args", JSONObject().put("tools", true))
-                "quota_filter" -> o.put("args", JSONObject().put("min_quota", 0))
-                "tier_first" -> o.put("args", JSONObject().put("tier", "free"))
-                "where" -> o.put("args", JSONObject().put("expr", "lat < 3000"))
-                "ab_split" -> o.put("args", JSONObject().put("buckets", 2))
-                "canary" -> o.put("args", JSONObject().put("percent", 10))
-                "error_rate" -> o.put("args", JSONObject().apply {
-                    put("max_errors", 5); put("window_s", 300)
-                })
-                "budget_cap" -> o.put("args", JSONObject().put("max_spend", 100))
-                "take" -> o.put("args", JSONObject().put("n", 1))
-            }
-            sel.put(o)
+            val saved=(0 until previous.length()).map{previous.getJSONObject(it)}.firstOrNull{it.optString("op")==op}
+            val value=if(saved!=null)JSONObject(saved.toString()) else JSONObject().put("op",op).put("args",JSONObject())
+            sel.put(value)
         }
-        val rule = JSONObject().apply {
-            put("id", d.id.ifBlank { "default" })
-            put("name", d.name.ifBlank { d.id })
-            put("ruleSpecVersion", 1)
-            put("enabled", d.enabled)
-            put("select", sel)
-            put("execute", JSONObject().put("op", d.executeOp).put("args", JSONObject()))
-            put("switchGranularity", d.switchGranularity)
+        val rule=JSONObject(original.toString()).apply {
+            put("id",d.id.ifBlank{"default"});put("name",d.name);put("ruleSpecVersion",1)
+            put("enabled",d.enabled);put("select",sel);put("switchGranularity",d.switchGranularity)
+            val oldExec=original.optJSONObject("execute")
+            put("execute",if(oldExec?.optString("op")==d.executeOp)oldExec else JSONObject().put("op",d.executeOp).put("args",JSONObject()))
         }
-        ProviderRepo.saveRule(this, rule)
-        val rateSync = ProviderRepo.syncRateLimit(this, JSONObject().apply {
-            put("ratePerMin", d.ratePerMin.toIntOrNull() ?: 30)
-            put("burst", d.burst.toIntOrNull() ?: 3)
-            put("minIntervalMs", d.minIntervalMs.toIntOrNull() ?: 800)
-            put("jitterMs", d.jitterMs.toIntOrNull() ?: 150)
-            put("maxInflight", d.maxInflight.toIntOrNull() ?: 2)
-        })
+        ConfigStore.transact(this,d.configRevision) { state ->
+            val i=state.rules.indexOfFirst{it.optString("id")==rule.getString("id")}
+            if(i<0)state.rules.add(rule)else state.rules[i]=rule
+        }
         editingRuleId = null
         ruleDraft = RuleDraft()
         route = "main"
-        // 限流只填充未配置者，告知用户实际影响范围
-        if (rateSync.first > 0 || rateSync.second > 0) {
-            com.aqi.ccb.ui.UiToast.show(
-                "限流：填充 ${rateSync.first} 个，保留 ${rateSync.second} 个已有配置"
-            )
-        }
         refreshMain()
-        server?.let { srv ->
-            srv.update(ProviderRepo.runtimeProviders(this), ProviderRepo.runtimeRules(this))
-        }
     }
 
     // ==================== 虚拟模型 ====================
@@ -1164,13 +1159,6 @@ class MainActivity : ComponentActivity() {
             vmDraft = VirtualModelDraft()
             route = "main"
             refreshMain()
-            server?.let { srv ->
-                srv.update(
-                    ProviderRepo.runtimeProviders(this),
-                    ProviderRepo.runtimeRules(this),
-                    VirtualModelStore.load(this),
-                )
-            }
         }
     }
 

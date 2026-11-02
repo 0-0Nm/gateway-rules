@@ -4,111 +4,139 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
-/**
- * 配置持久化：providers.json + rules.json 落在 app filesDir。
- *
- * 用 Android 内置 org.json，零第三方依赖（compile_java / Gradle 都不受限）。
- * 密钥不落这里 —— 只存 apiKeyRef，真实 key 见 SecretStore（内存），
- * 用户若勾选"记住密钥"则另存 keys.json（明确告知风险）。
- */
+/** Single committed generation. Legacy files are imported on first successful mutation only. */
 object ConfigStore {
+    private const val STATE = "config-state-v1.json"
+    private const val MAX_BYTES = 8 * 1024 * 1024
+    class ConfigException(val code: String, message: String) : IOException(message)
+    data class Snapshot(
+        val revision: Long,
+        val providers: MutableList<JSONObject>,
+        val rules: MutableList<JSONObject>,
+        val keys: MutableMap<String, String>,
+        val virtualModels: MutableList<JSONObject>,
+    ) {
+        fun json(): JSONObject = JSONObject().put("formatVersion", 1).put("revision", revision)
+            .put("providers", JSONArray(providers)).put("rules", JSONArray(rules))
+            .put("keys", JSONObject(keys as Map<*, *>)).put("virtualModels", JSONArray(virtualModels))
+        fun detached(): Snapshot = decode(json())
+    }
+    data class Commit(val revision: Long, val changed: Boolean, val applied: Boolean, val applyError: String? = null) {
+        fun json(): JSONObject = JSONObject().put("ok", true).put("persisted", true)
+            .put("revision", revision).put("changed", changed).put("applied", applied)
+            .put("applyError", applyError ?: JSONObject.NULL)
+    }
+    // The Android service owns this hook. Tests can leave it null or inject a deterministic publisher.
+    @Volatile var publisher: ((Snapshot) -> Boolean)? = null
 
-    private const val F_PROVIDERS = "providers.json"
-    private const val F_RULES = "rules.json"
-    private const val F_KEYS = "keys.json"
-
-    // ---------------- Provider ----------------
-
-    fun loadProviders(ctx: Context): MutableList<JSONObject> {
-        val f = File(ctx.filesDir, F_PROVIDERS)
+    private fun array(o: JSONObject, key: String): MutableList<JSONObject> {
+        val arr = o.getJSONArray(key)
+        return MutableList(arr.length()) { JSONObject(arr.getJSONObject(it).toString()) }
+    }
+    private fun decode(o: JSONObject): Snapshot {
+        if (o.getInt("formatVersion") != 1) throw ConfigException("FORMAT_UNSUPPORTED", "Unsupported config format")
+        val revision = o.getLong("revision")
+        if (revision < 0) throw ConfigException("CORRUPT_CONFIG", "Invalid config revision")
+        val keyObject = o.getJSONObject("keys")
+        val keys = mutableMapOf<String, String>()
+        keyObject.keys().forEach { k -> keys[k] = keyObject.getString(k) }
+        return Snapshot(revision, array(o, "providers"), array(o, "rules"), keys, array(o, "virtualModels"))
+    }
+    private fun text(f: File): String {
+        if (!f.isFile || f.length() > MAX_BYTES) throw ConfigException("CONFIG_UNREADABLE", "Config file unreadable or too large")
+        return f.readText(Charsets.UTF_8)
+    }
+    private fun legacyArray(dir: File, name: String): MutableList<JSONObject> {
+        val f = File(dir, name)
         if (!f.exists()) return mutableListOf()
-        return try {
-            val arr = JSONArray(f.readText(Charsets.UTF_8))
-            MutableList(arr.length()) { arr.getJSONObject(it) }
-        } catch (e: Exception) {
-            GateLog.error("config", "loadProviders failed", e)
-            mutableListOf()
-        }
+        val a = JSONArray(text(f))
+        return MutableList(a.length()) { a.getJSONObject(it) }
     }
-
-    fun saveProviders(ctx: Context, list: List<JSONObject>) {
+    private fun readUnlocked(ctx: Context): Snapshot {
         try {
-            val arr = JSONArray()
-            list.forEach { arr.put(it) }
-            File(ctx.filesDir, F_PROVIDERS).writeText(arr.toString(2), Charsets.UTF_8)
-            GateLog.info("config", "providers saved n=${list.size}")
-        } catch (e: Exception) {
-            GateLog.error("config", "saveProviders failed", e)
+            val f = File(ctx.filesDir, STATE)
+            val state = if (f.exists()) decode(JSONObject(text(f))) else {
+                val kf = File(ctx.filesDir, "keys.json")
+                val ko = if (kf.exists()) JSONObject(text(kf)) else JSONObject()
+                val keys = mutableMapOf<String, String>()
+                ko.keys().forEach { k -> keys[k] = ko.getString(k) }
+                Snapshot(0, legacyArray(ctx.filesDir, "providers.json"), legacyArray(ctx.filesDir, "rules.json"),
+                    keys, legacyArray(ctx.filesDir, "virtual_models.json"))
+            }
+            ConfigValidation.validate(state)
+            return state
+        } catch (e: ConfigException) { throw e }
+        catch (e: Exception) { throw ConfigException("CORRUPT_CONFIG", "Cannot read configuration (${e.javaClass.simpleName}); previous files were not replaced") }
+    }
+    private fun canonical(v:Any?):String = when(v) {
+        null,JSONObject.NULL -> "null"
+        is JSONObject -> v.keys().asSequence().toList().sorted().joinToString(",","{","}"){JSONObject.quote(it)+":"+canonical(v.get(it))}
+        is JSONArray -> (0 until v.length()).joinToString(",","[","]"){canonical(v.get(it))}
+        is String -> JSONObject.quote(v)
+        is Number -> java.math.BigDecimal(v.toString()).stripTrailingZeros().toPlainString()
+        is Boolean -> v.toString()
+        else -> throw ConfigException("INVALID_CONFIG","Unsupported JSON value")
+    }
+    @Synchronized fun read(ctx: Context): Snapshot = readUnlocked(ctx)
+
+    private fun publish(state: Snapshot, changed: Boolean): Commit = try {
+        Commit(state.revision, changed, publisher?.invoke(state.detached()) == true)
+    } catch (e: Exception) {
+        // Persistence is committed. Do not claim runtime publication succeeded or retry the write.
+        Commit(state.revision, changed, false, e.javaClass.simpleName)
+    }
+    @Synchronized fun applyCurrent(ctx: Context): Commit = publish(readUnlocked(ctx), false)
+
+    @Synchronized
+    fun transact(ctx: Context, expectedRevision: Long? = null, edit: (Snapshot) -> Unit): Commit {
+        val dir = ctx.filesDir
+        if (!dir.exists() && !dir.mkdirs()) throw ConfigException("WRITE_FAILED", "Cannot create config directory")
+        if (!dir.isDirectory) throw ConfigException("WRITE_FAILED", "Config path is not a directory")
+        RandomAccessFile(File(dir, ".config-write.lock"), "rw").use { lockFile ->
+            lockFile.channel.lock().use {
+                val current = readUnlocked(ctx)
+                if (expectedRevision != null && expectedRevision != current.revision)
+                    throw ConfigException("REVISION_CONFLICT", "Configuration changed; reload before editing")
+                val next = current.detached()
+                edit(next)
+                ConfigValidation.validate(next)
+                val unchanged = canonical(current.json()) == canonical(next.json())
+                if (unchanged && File(dir, STATE).exists()) return publish(current, false)
+                if (current.revision == Long.MAX_VALUE) throw ConfigException("REVISION_EXHAUSTED", "Configuration revision exhausted")
+                val committed = next.copy(revision = current.revision + 1)
+                val bytes = committed.json().toString(2).toByteArray(Charsets.UTF_8)
+                if (bytes.size > MAX_BYTES) throw ConfigException("CONFIG_TOO_LARGE", "Configuration exceeds size limit")
+                val target = File(dir, STATE)
+                val temp = File.createTempFile(".config-", ".tmp", dir)
+                try {
+                    // App-private files; no credential-bearing copies in shared storage.
+                    temp.setReadable(false, false); temp.setWritable(false, false)
+                    temp.setReadable(true, true); temp.setWritable(true, true)
+                    FileOutputStream(temp).use { stream -> stream.write(bytes); stream.fd.sync() }
+                    Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                } catch (e: Exception) {
+                    throw ConfigException("WRITE_FAILED", "Atomic configuration commit failed (${e.javaClass.simpleName})")
+                } finally { if (temp.exists()) temp.delete() }
+                GateLog.info("config", "committed revision=" + committed.revision)
+                return publish(committed, true)
+            }
         }
     }
 
-    // ---------------- Rule ----------------
-
-    fun loadRules(ctx: Context): MutableList<JSONObject> {
-        val f = File(ctx.filesDir, F_RULES)
-        if (!f.exists()) return mutableListOf()
-        return try {
-            val arr = JSONArray(f.readText(Charsets.UTF_8))
-            MutableList(arr.length()) { arr.getJSONObject(it) }
-        } catch (e: Exception) {
-            GateLog.error("config", "loadRules failed", e)
-            mutableListOf()
-        }
-    }
-
-    fun saveRules(ctx: Context, list: List<JSONObject>) {
-        try {
-            val arr = JSONArray()
-            list.forEach { arr.put(it) }
-            File(ctx.filesDir, F_RULES).writeText(arr.toString(2), Charsets.UTF_8)
-            GateLog.info("config", "rules saved n=${list.size}")
-        } catch (e: Exception) {
-            GateLog.error("config", "saveRules failed", e)
-        }
-    }
-
-    // ---------------- Keys ----------------
-
-    fun loadKeys(ctx: Context): MutableMap<String, String> {
-        val f = File(ctx.filesDir, F_KEYS)
-        if (!f.exists()) return mutableMapOf()
-        return try {
-            val o = JSONObject(f.readText(Charsets.UTF_8))
-            val m = mutableMapOf<String, String>()
-            o.keys().forEach { k -> m[k] = o.optString(k, "") }
-            m
-        } catch (e: Exception) {
-            mutableMapOf()
-        }
-    }
-
-    fun saveKeys(ctx: Context, keys: Map<String, String>) {
-        try {
-            val o = JSONObject()
-            keys.forEach { (k, v) -> o.put(k, v) }
-            File(ctx.filesDir, F_KEYS).writeText(o.toString(2), Charsets.UTF_8)
-            GateLog.info("config", "keys saved n=${keys.size}")
-        } catch (e: Exception) {
-            GateLog.error("config", "saveKeys failed", e)
-        }
-    }
-
-    // ---------------- 转换成运行时对象 ----------------
-
-    fun toProviders(list: List<JSONObject>): List<Provider> =
-        list.mapNotNull { o ->
-            runCatching { Provider.fromJson(jsonToMap(o)) }
-                .onFailure { GateLog.error("config", "provider parse failed", it) }
-                .getOrNull()
-        }
-
-    fun toRules(list: List<JSONObject>): List<RuleSpec> =
-        list.mapNotNull { o ->
-            runCatching { RuleSpec.fromJson(jsonToMap(o)) }
-                .onFailure { GateLog.error("config", "rule parse failed", it) }
-                .getOrNull()
-        }
+    fun loadProviders(ctx: Context): MutableList<JSONObject> = read(ctx).providers
+    fun loadRules(ctx: Context): MutableList<JSONObject> = read(ctx).rules
+    fun loadKeys(ctx: Context): MutableMap<String, String> = read(ctx).keys
+    fun saveProviders(ctx: Context, list: List<JSONObject>) { transact(ctx) { it.providers.clear(); it.providers.addAll(list) } }
+    fun saveRules(ctx: Context, list: List<JSONObject>) { transact(ctx) { it.rules.clear(); it.rules.addAll(list) } }
+    fun saveKeys(ctx: Context, keys: Map<String, String>) { transact(ctx) { it.keys.clear(); it.keys.putAll(keys) } }
+    fun toProviders(list: List<JSONObject>): List<Provider> = list.map { Provider.fromJson(jsonToMap(it)) }
+    fun toRules(list: List<JSONObject>): List<RuleSpec> = list.map { RuleSpec.fromJson(jsonToMap(it)) }
 
     /** JSONObject -> Map<String, Any?>，供 Contracts.fromJson 使用 */
     fun jsonToMap(o: JSONObject): Map<String, Any?> {

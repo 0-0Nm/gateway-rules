@@ -25,6 +25,7 @@ data class ProviderDraft(
      * 现在：id 非空则直接用它，为空才回退到 name 派生（兼容旧配置）。
      */
     val id: String = "",
+    val configRevision: Long? = null,
     val name: String = "",
     val baseUrl: String = "",
     val apiKey: String = "",
@@ -36,6 +37,8 @@ data class ProviderDraft(
     val minIntervalMs: String = "800",
     val jitterMs: String = "150",
     val maxInflight: String = "2",
+    val softRateSec: Double = 600.0,
+    val softRateMaxSec: Double = 7200.0,
     val enabled: Boolean = true,
     val tier: String = "free",
     /**
@@ -94,11 +97,13 @@ data class ProviderDraft(
             if (apiKey.isNotEmpty()) put("apiKeyRef", "ref-" + idOr())
             put("models", modelsArr)
             put("rateLimit", JSONObject().apply {
-                put("ratePerMin", ratePerMin.toIntOrNull() ?: 30)
+                put("ratePerMin", ratePerMin.toDoubleOrNull() ?: 30.0)
                 put("burst", burst.toIntOrNull() ?: 3)
-                put("minIntervalMs", minIntervalMs.toIntOrNull() ?: 800)
-                put("jitterMs", jitterMs.toIntOrNull() ?: 150)
+                put("minIntervalMs", minIntervalMs.toDoubleOrNull() ?: 800.0)
+                put("jitterMs", jitterMs.toDoubleOrNull() ?: 150.0)
                 put("maxInflight", maxInflight.toIntOrNull() ?: 2)
+                put("softRateSec", softRateSec)
+                put("softRateMaxSec", softRateMaxSec)
             })
             put("suffixStyle", suffixStyle)
         }
@@ -122,11 +127,13 @@ data class ProviderDraft(
                 baseUrl = o.optString("baseUrl", ""),
                 apiKey = "",
                 models = models,
-                ratePerMin = (rl?.optInt("ratePerMin", 30) ?: 30).toString(),
+                ratePerMin = (rl?.optDouble("ratePerMin", 30.0) ?: 30.0).toString(),
                 burst = (rl?.optInt("burst", 3) ?: 3).toString(),
-                minIntervalMs = (rl?.optInt("minIntervalMs", 800) ?: 800).toString(),
-                jitterMs = (rl?.optInt("jitterMs", 150) ?: 150).toString(),
+                minIntervalMs = (rl?.optDouble("minIntervalMs", 800.0) ?: 800.0).toString(),
+                jitterMs = (rl?.optDouble("jitterMs", 150.0) ?: 150.0).toString(),
                 maxInflight = (rl?.optInt("maxInflight", 2) ?: 2).toString(),
+                softRateSec = rl?.optDouble("softRateSec", 600.0) ?: 600.0,
+                softRateMaxSec = rl?.optDouble("softRateMaxSec", 7200.0) ?: 7200.0,
                 enabled = o.optBoolean("enabled", true),
                 tier = o.optString("tier", "free"),
                 weight = o.optDouble("weight", 1.0).toString(),

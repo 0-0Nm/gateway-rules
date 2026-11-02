@@ -87,41 +87,16 @@ object AppSettings {
  * MCP 桥接实现 —— 让 McpServer 能读写 App 数据，而不直接依赖 Context。
  */
 class McpBridge(private val context: Context) : McpConfig {
+    init { GatewayRuntime.configurePublisher() }
 
     private fun providers(): List<Provider> = ProviderRepo.runtimeProviders(context)
 
     override fun listProvidersJson(): String {
-        val drafts = ProviderRepo.list(context)
-        val arr = JSONArray()
-        drafts.forEach { d ->
-            val p = JSONObject().apply {
-                put("id", d.idOr())
-                put("name", d.name)
-                put("baseUrl", d.baseUrl)
-                put("enabled", d.enabled)
-                put("modelCount", d.models.size)
-                put("models", JSONArray().apply {
-                    d.models.forEach { m ->
-                        put(JSONObject().apply {
-                            put("modelId", m.modelId)
-                            put("available", m.available ?: JSONObject.NULL)
-                            put("latencyMs", m.latencyMs)
-                            put("lastError", m.lastError)
-                            put("abilities", JSONArray(m.abilities))
-                        })
-                    }
-                })
-                put("rateLimit", JSONObject().apply {
-                    put("ratePerMin", d.ratePerMin.toIntOrNull() ?: 30)
-                    put("burst", d.burst.toIntOrNull() ?: 3)
-                    put("minIntervalMs", d.minIntervalMs.toIntOrNull() ?: 800)
-                    put("jitterMs", d.jitterMs.toIntOrNull() ?: 150)
-                    put("maxInflight", d.maxInflight.toIntOrNull() ?: 2)
-                })
-            }
-            arr.put(p)
+        val state=ConfigStore.read(context)
+        val list=state.providers.map { p ->
+            JSONObject(p.toString()).apply { remove("apiKey");remove("apiKeyRef") }
         }
-        return JSONObject().apply { put("providers", arr) }.toString(2)
+        return JSONObject().put("revision",state.revision).put("providers",JSONArray(list)).toString(2)
     }
 
     override fun addProvider(name: String, baseUrl: String, apiKey: String): String {
@@ -163,9 +138,8 @@ class McpBridge(private val context: Context) : McpConfig {
             models = models.map { ModelInfo(modelId = it, enabled = false) },
             suffixStyle = probe.style?.name ?: "AUTO",
         )
-        val saved = ProviderRepo.save(context, draft)
-        return JSONObject().apply {
-            put("ok", saved)
+        val committed = ProviderRepo.saveCommitted(context, draft)
+        return committed.json().apply {
             put("id", draft.idOr())
             put("resolvedBaseUrl", resolved)
             put("style", probe.style?.name ?: "AUTO")
@@ -211,9 +185,9 @@ class McpBridge(private val context: Context) : McpConfig {
                 testedAt = System.currentTimeMillis(),
             ) else m
         }
-        ProviderRepo.save(context, d.copy(models = tested))
+        val committed = ProviderRepo.saveCommitted(context, d.copy(models = tested))
 
-        return JSONObject().apply {
+        return committed.json().apply {
             put("providerId", providerId)
             put("total", d.models.size)
             put("tested", results.length())
@@ -223,31 +197,22 @@ class McpBridge(private val context: Context) : McpConfig {
     }
 
     override fun listRulesJson(): String =
-        JSONObject().apply {
-            put("rules", JSONArray(ConfigStore.loadRules(context)))
-        }.toString(2)
+        ConfigStore.read(context).let { JSONObject().put("revision",it.revision).put("rules",JSONArray(it.rules)).toString(2) }
 
-    override fun listVirtualModelsJson(): String {
-        val vms = VirtualModelStore.load(context)
-        val provs = providers()
-        val arr = JSONArray()
-        com.aqi.ccb.gateway.VirtualModelResolver.status(vms, provs).forEach { m ->
-            arr.put(JSONObject(m as Map<*, *>))
-        }
-        return JSONObject().apply { put("virtualModels", arr) }.toString(2)
+    override fun listVirtualModelsJson():String {
+        val state=ConfigStore.read(context)
+        val runtime=ConfigStore.toProviders(state.providers)
+        val vms=state.virtualModels.map{com.aqi.ccb.gateway.VirtualModel.fromJson(it)}
+        return JSONObject().put("revision",state.revision).put("virtualModels",JSONArray(state.virtualModels))
+            .put("resolution",JSONArray(com.aqi.ccb.gateway.VirtualModelResolver.status(vms,runtime).map{JSONObject(it as Map<*,*>)})).toString(2)
     }
-
-    override fun statusJson(gatewayPort: Int): String = JSONObject().apply {
-        put("gatewayPort", gatewayPort)
-        put("mcpPort", AppSettings.mcpPort(context))
-        put("providers", ProviderRepo.list(context).size)
-        put("rules", ConfigStore.loadRules(context).size)
-        put("virtualModels", VirtualModelStore.load(context).size)
-        put("switch", JSONObject().apply {
-            put("bindings", com.aqi.ccb.gateway.SwitchPolicy.stats()["bindings"] ?: 0)
-            put("sessions", com.aqi.ccb.gateway.SwitchPolicy.stats()["sessions"] ?: 0)
-        })
-    }.toString(2)
+    override fun statusJson(gatewayPort:Int):String {
+        val state=ConfigStore.read(context)
+        return JSONObject().put("gatewayPort",GatewayRuntime.listeningPort().takeIf{it>0}?:gatewayPort)
+            .put("mcpPort",AppSettings.mcpPort(context)).put("persistedRevision",state.revision)
+            .put("runtimeRevision",com.aqi.ccb.gateway.GatewayService.current?.configRevisionPublic()?:JSONObject.NULL)
+            .put("providers",state.providers.size).put("rules",state.rules.size).put("virtualModels",state.virtualModels.size).toString(2)
+    }
 
     override fun getUiStyleJson(): String =
         com.aqi.ccb.ui.UiStyle.load(context).toJson().toString(2)
@@ -293,277 +258,41 @@ class McpBridge(private val context: Context) : McpConfig {
      * 注意必须用块体（{}）而非表达式体（= try { ... }）：
      * Kotlin 的表达式体不允许 return。
      */
-    override fun reloadConfig(): String {
-        return try {
-            val providers = ProviderRepo.runtimeProviders(context)
-            val rules = ProviderRepo.runtimeRules(context)
-            val vmodels = VirtualModelStore.load(context)
-            val applied = GatewayRuntime.applyConfig(providers, rules, vmodels)
-            JSONObject().apply {
-                put("ok", true)
-                put("applied", applied)
-                put("providers", providers.size)
-                put("rules", rules.size)
-                put("virtualModels", vmodels.size)
-                put(
-                    "note",
-                    if (applied) "已热加载，运行中的网关立即生效"
-                    else "配置已保存；网关当前未运行，启动后自动生效"
-                )
-            }.toString(2)
-        } catch (e: Exception) {
-            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
-        }
+    private fun command(action: () -> com.aqi.ccb.gateway.ConfigStore.Commit): String = try {
+        action().json().toString(2)
+    } catch (e: com.aqi.ccb.gateway.ConfigStore.ConfigException) {
+        JSONObject().put("ok",false).put("persisted",false).put("applied",false)
+            .put("code",e.code).put("error",e.message).toString()
+    } catch (e: Exception) {
+        JSONObject().put("ok",false).put("persisted",false).put("applied",false)
+            .put("code","INVALID_REQUEST").put("error",e.javaClass.simpleName).toString()
     }
-
-    // ==================== 写操作实现（MCP 完整 CLI 化） ====================
-
-    override fun updateProvider(providerId: String, patchJson: String): String {
-        return try {
-            val all = ProviderRepo.list(context)
-            val idx = all.indexOfFirst { it.idOr() == providerId }
-            if (idx < 0) {
-                return """{"ok":false,"error":"provider not found: $providerId"}"""
-            }
-            val patch = JSONObject(patchJson)
-            val cur = all[idx]
-            // 逐字段按 patch 覆盖；未出现的字段保持原值
-            fun str(k: String, d: String) = if (patch.has(k)) patch.optString(k, d) else d
-            fun num(k: String, d: String) = if (patch.has(k)) patch.opt(k).toString() else d
-            fun bool(k: String, d: Boolean) = if (patch.has(k)) patch.optBoolean(k, d) else d
-            val next = cur.copy(
-                name = str("name", cur.name),
-                baseUrl = str("baseUrl", cur.baseUrl),
-                apiKey = str("apiKey", cur.apiKey),
-                enabled = bool("enabled", cur.enabled),
-                tier = str("tier", cur.tier),
-                weight = num("weight", cur.weight),
-                quota = str("quota", cur.quota),
-                ratePerMin = num("ratePerMin", cur.ratePerMin),
-                burst = num("burst", cur.burst),
-                minIntervalMs = num("minIntervalMs", cur.minIntervalMs),
-                jitterMs = num("jitterMs", cur.jitterMs),
-                maxInflight = num("maxInflight", cur.maxInflight),
-                suffixStyle = str("suffixStyle", cur.suffixStyle),
-            )
-            val ok = ProviderRepo.save(context, next)
-            if (ok) {
-                GatewayRuntime.applyConfig(
-                    ProviderRepo.runtimeProviders(context),
-                    ProviderRepo.runtimeRules(context),
-                    VirtualModelStore.load(context),
-                )
-            }
-            JSONObject().apply {
-                put("ok", ok)
-                put("providerId", providerId)
-                put("note", if (ok) "已保存并热加载" else "保存失败（字段不完整？）")
-            }.toString(2)
-        } catch (e: Exception) {
-            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
-        }
+    override fun reloadConfig(): String = command { ConfigStore.applyCurrent(context) }
+    override fun updateProvider(providerId:String,patchJson:String):String = command {
+        com.aqi.ccb.gateway.ConfigCommands.updateProvider(context,providerId,JSONObject(patchJson))
     }
-
-    override fun deleteProvider(providerId: String): String {
-        return try {
-            ProviderRepo.delete(context, providerId)
-            GatewayRuntime.applyConfig(
-                ProviderRepo.runtimeProviders(context),
-                ProviderRepo.runtimeRules(context),
-                VirtualModelStore.load(context),
-            )
-            """{"ok":true,"deleted":"$providerId"}"""
-        } catch (e: Exception) {
-            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
-        }
+    override fun deleteProvider(providerId:String):String = command {
+        com.aqi.ccb.gateway.ConfigCommands.deleteProvider(context,providerId)
     }
-
-    override fun updateModel(providerId: String, modelId: String, patchJson: String): String {
-        return try {
-            val all = ProviderRepo.list(context)
-            val idx = all.indexOfFirst { it.idOr() == providerId }
-            if (idx < 0) return """{"ok":false,"error":"provider not found: $providerId"}"""
-            val cur = all[idx]
-            val mi = cur.models.indexOfFirst { it.modelId == modelId }
-            if (mi < 0) return """{"ok":false,"error":"model not found: $modelId"}"""
-            val patch = JSONObject(patchJson)
-            val old = cur.models[mi]
-
-            fun strList(k: String, d: List<String>): List<String> {
-                if (!patch.has(k)) return d
-                val a = patch.optJSONArray(k) ?: return d
-                return (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
-            }
-
-            val next = old.copy(
-                displayName = if (patch.has("displayName")) patch.optString("displayName", old.displayName) else old.displayName,
-                enabled = if (patch.has("enabled")) patch.optBoolean("enabled", old.enabled) else old.enabled,
-                type = if (patch.has("type")) patch.optString("type", old.type) else old.type,
-                abilities = strList("abilities", old.abilities),
-                inputModalities = strList("inputModalities", old.inputModalities),
-                outputModalities = strList("outputModalities", old.outputModalities),
-                tools = strList("tools", old.tools),
-                contextLength = if (patch.has("contextLength")) patch.optInt("contextLength", old.contextLength) else old.contextLength,
-                priceInPerM = if (patch.has("priceInPerM")) patch.optDouble("priceInPerM", old.priceInPerM) else old.priceInPerM,
-                priceOutPerM = if (patch.has("priceOutPerM")) patch.optDouble("priceOutPerM", old.priceOutPerM) else old.priceOutPerM,
-            )
-            val models = cur.models.toMutableList()
-            models[mi] = next
-            val ok = ProviderRepo.save(context, cur.copy(models = models))
-            if (ok) {
-                GatewayRuntime.applyConfig(
-                    ProviderRepo.runtimeProviders(context),
-                    ProviderRepo.runtimeRules(context),
-                    VirtualModelStore.load(context),
-                )
-            }
-            JSONObject().apply {
-                put("ok", ok)
-                put("providerId", providerId)
-                put("modelId", modelId)
-                put("model", next.toJson())
-            }.toString(2)
-        } catch (e: Exception) {
-            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
-        }
+    override fun updateModel(providerId:String,modelId:String,patchJson:String):String = command {
+        com.aqi.ccb.gateway.ConfigCommands.updateModel(context,providerId,modelId,JSONObject(patchJson))
     }
-
-    override fun setModelsEnabled(providerId: String, modelIdsJson: String, enabled: Boolean): String {
-        return try {
-            val all = ProviderRepo.list(context)
-            val idx = all.indexOfFirst { it.idOr() == providerId }
-            if (idx < 0) return """{"ok":false,"error":"provider not found: $providerId"}"""
-            val cur = all[idx]
-            val arr = JSONArray(modelIdsJson)
-            val targets = (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }.toSet()
-            var changed = 0
-            val models = cur.models.map { m ->
-                if (m.modelId in targets && m.enabled != enabled) {
-                    changed++
-                    m.copy(enabled = enabled)
-                } else m
-            }
-            val ok = ProviderRepo.save(context, cur.copy(models = models))
-            if (ok) {
-                GatewayRuntime.applyConfig(
-                    ProviderRepo.runtimeProviders(context),
-                    ProviderRepo.runtimeRules(context),
-                    VirtualModelStore.load(context),
-                )
-            }
-            JSONObject().apply {
-                put("ok", ok)
-                put("changed", changed)
-                put("requested", targets.size)
-                put("enabled", enabled)
-                put("enabledTotal", models.count { it.enabled })
-                put("total", models.size)
-            }.toString(2)
-        } catch (e: Exception) {
-            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
-        }
+    override fun setModelsEnabled(providerId:String,modelIdsJson:String,enabled:Boolean):String = command {
+        val a=JSONArray(modelIdsJson)
+        com.aqi.ccb.gateway.ConfigCommands.setModelsEnabled(context,providerId,
+            (0 until a.length()).map{a.getString(it)}.toSet(),enabled)
     }
-
-    override fun saveRule(ruleJson: String): String {
-        return try {
-            val obj = JSONObject(ruleJson)
-            if (!obj.has("id") || obj.optString("id").isBlank()) {
-                return """{"ok":false,"error":"rule.id required"}"""
-            }
-            ProviderRepo.saveRule(context, obj)
-            GatewayRuntime.applyConfig(
-                ProviderRepo.runtimeProviders(context),
-                ProviderRepo.runtimeRules(context),
-                VirtualModelStore.load(context),
-            )
-            JSONObject().apply {
-                put("ok", true)
-                put("ruleId", obj.optString("id"))
-                put("total", ProviderRepo.listRules(context).size)
-            }.toString(2)
-        } catch (e: Exception) {
-            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
-        }
+    override fun saveRule(ruleJson:String):String = command {
+        com.aqi.ccb.gateway.ConfigCommands.saveRule(context,JSONObject(ruleJson))
     }
-
-    override fun deleteRule(ruleId: String): String {
-        return try {
-            ProviderRepo.deleteRule(context, ruleId)
-            GatewayRuntime.applyConfig(
-                ProviderRepo.runtimeProviders(context),
-                ProviderRepo.runtimeRules(context),
-                VirtualModelStore.load(context),
-            )
-            """{"ok":true,"deleted":"$ruleId","total":${ProviderRepo.listRules(context).size}}"""
-        } catch (e: Exception) {
-            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
-        }
+    override fun deleteRule(ruleId:String):String = command {
+        com.aqi.ccb.gateway.ConfigCommands.deleteRule(context,ruleId)
     }
-
-    override fun saveVirtualModel(vmJson: String): String {
-        return try {
-            val obj = JSONObject(vmJson)
-            val name = obj.optString("name")
-            if (name.isBlank()) return """{"ok":false,"error":"virtual model name required"}"""
-            val members = obj.optJSONArray("members") ?: JSONArray()
-            if (members.length() == 0) {
-                return """{"ok":false,"error":"members required (至少一个 {providerId, modelId})"}"""
-            }
-            // 校验每个 member 的 provider 是否真实存在，避免像 "a"/"b" 那样写错
-            val provIds = ProviderRepo.list(context).map { it.idOr() }.toSet()
-            val bad = mutableListOf<String>()
-            for (i in 0 until members.length()) {
-                val m = members.optJSONObject(i) ?: continue
-                val pid = m.optString("providerId")
-                if (pid !in provIds) bad.add(pid)
-            }
-            if (bad.isNotEmpty()) {
-                return JSONObject().apply {
-                    put("ok", false)
-                    put("error", "这些 providerId 不存在: " + bad.joinToString(","))
-                    put("available", JSONArray(provIds.toList()))
-                }.toString(2)
-            }
-            val vm = com.aqi.ccb.gateway.VirtualModel.fromJson(obj)
-            val list = VirtualModelStore.load(context)
-            val idx = list.indexOfFirst { it.name == name }
-            if (idx >= 0) list[idx] = vm else list.add(vm)
-            VirtualModelStore.save(context, list)
-            GatewayRuntime.applyConfig(
-                ProviderRepo.runtimeProviders(context),
-                ProviderRepo.runtimeRules(context),
-                VirtualModelStore.load(context),
-            )
-            JSONObject().apply {
-                put("ok", true)
-                put("name", name)
-                put("members", members.length())
-                put("total", list.size)
-            }.toString(2)
-        } catch (e: Exception) {
-            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
-        }
+    override fun saveVirtualModel(vmJson:String):String = command {
+        com.aqi.ccb.gateway.ConfigCommands.saveVirtualModel(context,JSONObject(vmJson))
     }
-
-    override fun deleteVirtualModel(name: String): String {
-        return try {
-            val list = VirtualModelStore.load(context)
-            val before = list.size
-            list.removeAll { it.name == name }
-            VirtualModelStore.save(context, list)
-            GatewayRuntime.applyConfig(
-                ProviderRepo.runtimeProviders(context),
-                ProviderRepo.runtimeRules(context),
-                VirtualModelStore.load(context),
-            )
-            JSONObject().apply {
-                put("ok", true)
-                put("deleted", if (list.size < before) name else null)
-                put("total", list.size)
-            }.toString(2)
-        } catch (e: Exception) {
-            """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
-        }
+    override fun deleteVirtualModel(name:String):String = command {
+        com.aqi.ccb.gateway.ConfigCommands.deleteVirtualModel(context,name)
     }
 
     override fun readLog(lines: Int): String = try {
