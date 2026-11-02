@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -511,23 +512,17 @@ internal fun ModelRow(
                         },
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        smallField(
+                        priceField(
+                            identity = model.modelId + ":input",
                             label = "输入单价/M",
-                            value = if (model.priceInPerM > 0) fmtPrice(model.priceInPerM) else "",
-                            numeric = true,
-                            width = 90,
-                            onChange = {
-                                onUpdate(model.copy(priceInPerM = it.toDoubleOrNull() ?: 0.0))
-                            },
+                            value = model.priceInPerM,
+                            onChange = { onUpdate(model.copy(priceInPerM = it)) },
                         )
-                        smallField(
+                        priceField(
+                            identity = model.modelId + ":output",
                             label = "输出单价/M",
-                            value = if (model.priceOutPerM > 0) fmtPrice(model.priceOutPerM) else "",
-                            numeric = true,
-                            width = 90,
-                            onChange = {
-                                onUpdate(model.copy(priceOutPerM = it.toDoubleOrNull() ?: 0.0))
-                            },
+                            value = model.priceOutPerM,
+                            onChange = { onUpdate(model.copy(priceOutPerM = it)) },
                         )
                     }
                 }
@@ -604,6 +599,42 @@ internal fun ModelRow(
         }
         Spacer(Modifier.height(4.dp))
     }
+}
+
+/** Price fields keep accepted decimal text while the model retains the numeric value. */
+@Composable
+internal fun priceField(identity: String, label: String, value: Double?, onChange: (Double?) -> Unit) {
+    var text by remember(identity) { mutableStateOf(com.aqi.ccb.gateway.ModelPricing.format(value)) }
+    var lastEmitted by remember(identity) { mutableStateOf(value) }
+    var rejectedInput by remember(identity) { mutableStateOf(false) }
+    LaunchedEffect(identity, value) {
+        // Refresh external updates without normalizing our own "0." edit back to "0".
+        if (value != lastEmitted) {
+            text = com.aqi.ccb.gateway.ModelPricing.format(value)
+            lastEmitted = value
+            rejectedInput = false
+        }
+    }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { proposed ->
+            runCatching { com.aqi.ccb.gateway.ModelPricing.editorText(proposed) }
+                .onSuccess { accepted ->
+                    text = accepted
+                    rejectedInput = false
+                    val number = com.aqi.ccb.gateway.ModelPricing.parseInput(accepted)
+                    lastEmitted = number
+                    onChange(number)
+                }.onFailure { rejectedInput = true }
+        },
+        label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+        supportingText = { Text(if (rejectedInput) "输入未采用，保留原值" else "空=未知；0=零价") },
+        isError = rejectedInput,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        modifier = Modifier.width(140.dp),
+        singleLine = true,
+        textStyle = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFont),
+    )
 }
 
 /** 单行小输入框，三个 tab 共用 */
@@ -707,7 +738,7 @@ internal fun typeLabel(t: String): String = when (t.uppercase()) {
 
 /** 价格显示：去掉多余小数位 */
 internal fun fmtPrice(v: Double): String =
-    if (v == 0.0) "" else if (v >= 1) "%.2f".format(v) else "%.4f".format(v)
+    com.aqi.ccb.gateway.ModelPricing.format(v)
 
 // ==================== 小工具 ====================
 

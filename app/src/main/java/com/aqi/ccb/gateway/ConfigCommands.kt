@@ -47,6 +47,12 @@ object ConfigCommands {
             val a=provider(s,pid).getJSONArray("models")
             val model=(0 until a.length()).map{a.getJSONObject(it)}.firstOrNull{it.optString("modelId")==mid}
                 ?:fail("NOT_FOUND","Model not found")
+            if (patch.has("priceInPerM") || patch.has("priceOutPerM")) {
+                val old = ModelPricing.decode(ConfigStore.jsonToMap(model))
+                model.put("priceVersion", ModelPricing.VERSION)
+                model.put("priceInPerM", old.first ?: JSONObject.NULL)
+                model.put("priceOutPerM", old.second ?: JSONObject.NULL)
+            }
             patch.keys().forEach{k->if(k!="expectedRevision")model.put(k,patch.get(k))}
         }
     }

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -125,9 +126,10 @@ internal fun ModelPicker(
         }
 
         // ---------- 按 provider 分组 ----------
-        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+        // The parent editor scrolls vertically; this lazy child MUST receive a finite viewport.
+        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
             filtered.forEach { prov ->
-                // ProviderDraft 没有 id 字段，标识由 name 派生（见 idOr）
+                // Resolve the original index through the explicit provider id (idOr supports legacy drafts).
                 val pIdx = providers.indexOfFirst { it.idOr() == prov.idOr() }
                 // 分组标题
                 item(key = "hdr-${prov.idOr()}") {

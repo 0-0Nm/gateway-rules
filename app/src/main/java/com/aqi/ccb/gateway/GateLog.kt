@@ -49,6 +49,7 @@ object GateLog {
     }
 
     // ---- 系统运行日志 ----
+    @Synchronized
     fun system(level: String, tag: String, msg: String, fields: Map<String, Any?> = emptyMap()) {
         if (!enabled) return
         val dir = baseDir ?: return
@@ -71,6 +72,7 @@ object GateLog {
     }
 
     // ---- 调用日志(JSONL) ----
+    @Synchronized
     fun call(rec: Map<String, Any?>) {
         if (!enabled) return
         val dir = baseDir ?: return

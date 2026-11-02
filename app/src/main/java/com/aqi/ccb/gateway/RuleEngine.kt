@@ -29,9 +29,10 @@ object RuntimeState {
     val prefixMap = ConcurrentHashMap<String, String>()
     val errorWindow = ConcurrentHashMap<String, MutableList<Long>>()
 
+    @Synchronized
     fun rrNext(key: String, n: Int, dryRun: Boolean): Int {
         if (n <= 0) return 0
-        val cur = (rr[key] ?: 0) % n
+        val cur = Math.floorMod(rr[key] ?: 0, n)
         if (!dryRun) rr[key] = (cur + 1) % n
         return cur
     }
@@ -48,8 +49,9 @@ object RuntimeState {
         val now = System.currentTimeMillis()
         val w = errorWindow[pid] ?: return 0
         synchronized(w) {
-            w.removeAll { now - it > windowMs }
-            return w.size
+            // Queries never delete events needed by other (longer) windows.
+            if (windowMs < 0) return 0
+            return w.count { now - it in 0..windowMs }
         }
     }
 }
@@ -261,22 +263,24 @@ object RuleEngine {
         val key = (a["key"] as? String) ?: ctx.sessionId
         if (key.isEmpty()) return cs
         val buckets = (a["buckets"] as? Number)?.toInt() ?: 2
-        val idx = abs(key.hashCode()) % buckets.coerceAtLeast(1)
+        require(buckets > 0) { "buckets must be positive" }
+        val idx = Math.floorMod(key.hashCode(), buckets)
         val pick = cs[idx % cs.size]
         pick.why.add("ab_bucket=$idx")
         return listOf(pick) + cs.filter { it !== pick }
     }
 
+    /** First candidate is the canary pool; the remainder is stable. No cross-pool fallback. */
     fun opCanary(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
         if (cs.isEmpty()) return cs
-        val key = (a["key"] as? String) ?: ctx.sessionId
-        if (key.isEmpty()) return cs
-        val pct = (a["percent"] as? Number)?.toInt() ?: 10
-        if (abs(key.hashCode()) % 100 < pct) {
-            cs[0].why.add("canary_hit")
-            return listOf(cs[0]) + cs.drop(1)
-        }
-        return cs
+        val value = (a["percent"] as? Number)?.toDouble() ?: 10.0
+        require(value.isFinite() && value in 0.0..100.0 && value % 1.0 == 0.0) { "percent must be an integer in 0..100" }
+        val key = (a["key"] as? String)?.takeIf { it.isNotEmpty() }
+            ?: ctx.sessionId.ifEmpty { ctx.reqId }
+        val hit = value == 100.0 || (value > 0 && key.isNotEmpty() && Math.floorMod(key.hashCode(), 100) < value)
+        val result = if (hit) cs.take(1) else cs.drop(1)
+        result.forEach { it.why.add(if (hit) "canary_hit" else "canary_stable") }
+        return result
     }
 
     fun opErrorRate(cs: List<Cand>, ctx: RequestCtx, a: Map<String, Any?>): List<Cand> {
@@ -402,53 +406,43 @@ object RuleEngine {
      * 对「全排序」算子做互斥处理：只让链中第一个生效，其余跳过并记警告。
      * 这样既保证行为可预期，又能让用户在日志里看到自己配错了。
      */
-    fun applySelect(cands: List<Cand>, ctx: RequestCtx, steps: List<OpCall>): List<Cand> {
-        var cur = cands
+    fun applySelect(cands: List<Cand>, ctx: RequestCtx, steps: List<OpCall>): List<Cand> =
+        evaluate(cands, ctx, steps, null)
+
+    private fun evaluate(cands: List<Cand>, ctx: RequestCtx, steps: List<OpCall>,
+                         trace: MutableList<Map<String, Any?>>?): List<Cand> {
+        var cur = cands.map { it.copy(why = it.why.toMutableList()) }
         var sortApplied: String? = null
         val skipped = mutableListOf<String>()
-
         for (step in steps) {
-            if (step.op in FULL_SORT_OPS) {
-                if (sortApplied != null) {
-                    // 已有排序生效，本次跳过
-                    skipped.add(step.op)
-                    continue
-                }
-                sortApplied = step.op
+            val fn = SELECT_OPS[step.op] ?: error("unknown select operator: ${step.op}")
+            val before = cur.map { it.p.id }
+            val skip = step.op in FULL_SORT_OPS && sortApplied != null
+            if (skip) skipped.add(step.op)
+            else {
+                if (step.op in FULL_SORT_OPS) sortApplied = step.op
+                cur = fn(cur, ctx, step.args)
             }
-            val fn = SELECT_OPS[step.op]
-                ?: error("unknown select operator: ${step.op}; known=${SELECT_OPS.keys.sorted()}")
-            cur = fn(cur, ctx, step.args)
+            trace?.add(mapOf("op" to step.op, "before" to before, "after" to cur.map { it.p.id },
+                "status" to if (skip) "skipped" else "applied",
+                "reason" to if (skip) "first_sort_wins:$sortApplied" else ""))
         }
-
-        if (skipped.isNotEmpty()) {
-            GateLog.warn(
-                "rule",
-                "排序算子互斥：已用 " + sortApplied + "，忽略 " +
-                    skipped.joinToString(",") + "（同一条规则里多个排序只有第一个生效）"
-            )
-        }
+        if (!ctx.dryRun && skipped.isNotEmpty()) GateLog.warn("rule",
+            "first_sort_wins=$sortApplied skipped=${skipped.joinToString(",")}")
         return cur
     }
 
-    /** 决策链解释：只读，不推进轮转/绑定状态 */
+    /** Same evaluator as execution. Dry-run never advances round-robin or sticky bindings. */
     fun explain(rule: RuleSpec, providers: List<Provider>, ctx: RequestCtx): Map<String, Any?> {
         val dry = ctx.copy(dryRun = true, ruleKey = rule.id)
-        var cur = buildCands(providers, dry)
-        val steps = mutableListOf<Map<String, Any?>>()
-        for (step in rule.select) {
-            val before = cur.map { it.p.id }
-            val fn = SELECT_OPS[step.op]
-                ?: return mapOf("error" to "unknown select operator: ${step.op}")
-            cur = fn(cur, dry, step.args)
-            steps.add(mapOf("op" to step.op, "before" to before, "after" to cur.map { it.p.id }))
-        }
-        return mapOf(
-            "rule" to rule.id,
-            "select_trace" to steps,
-            "final" to cur.map { it.p.id },
-            "execute" to rule.execute.op
-        )
+        val trace = mutableListOf<Map<String, Any?>>()
+        val cur = try { evaluate(buildCands(providers, dry), dry, rule.select, trace) }
+        catch (e: IllegalStateException) { return mapOf("error" to e.message) }
+        catch (e: IllegalArgumentException) { return mapOf("error" to e.message) }
+        val stochastic = rule.select.any { it.op in setOf("random", "weighted_rr") }
+        return mapOf("rule" to rule.id, "select_trace" to trace, "final" to cur.map { it.p.id },
+            "execute" to rule.execute.op, "previewOnly" to stochastic,
+            "note" to if (stochastic) "Random operators are a sample, not a promise of the next request's selection" else "Same context and runtime state required")
     }
 
     fun pct(v: Double): String = "%.0f".format(v)

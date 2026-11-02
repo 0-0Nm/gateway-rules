@@ -84,7 +84,7 @@ data class RuleDraft(
             Triple("sticky_session", "会话粘性", "同会话固定一家"),
             Triple("sticky_prefix", "前缀粘性", "同 system prompt 固定"),
             Triple("ab_split", "A/B 分桶", "确定性分桶灰度"),
-            Triple("canary", "灰度", "按百分比放量"),
+            Triple("canary", "灰度", "首候选为灰度池，其余为稳定池；按比例选一池，不跨池回退"),
             Triple("error_rate", "错误率过滤", "滑动窗口"),
             Triple("budget_cap", "预算上限 ⚠ 暂不生效", "需要 token 用量统计与定价表，目前无数据源"),
             Triple("take", "截断", "只留前 N 个"),

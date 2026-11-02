@@ -80,8 +80,10 @@ object HttpUtil {
         headers: Map<String, String> = emptyMap(),
     ): Resp {
         var conn: HttpURLConnection? = null
+        var code = -1
         return try {
-            conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            conn = URL(url).openConnection() as HttpURLConnection
+            conn.apply {
                 instanceFollowRedirects = false
                 requestMethod = method
                 connectTimeout = timeoutMs
@@ -94,19 +96,16 @@ object HttpUtil {
                 if (jsonBody != null) {
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json")
-                    outputStream.use { it.write(jsonBody.toByteArray(Charsets.UTF_8)) }
+                    val bytes = jsonBody.toByteArray(Charsets.UTF_8)
+                    setFixedLengthStreamingMode(bytes.size)
+                    outputStream.use { it.write(bytes) }
                 }
             }
-            val code = conn.responseCode
-            val text = try {
-                val ins = if (code in 200..299) conn.inputStream else conn.errorStream
-                ins?.readBytes()?.toString(Charsets.UTF_8) ?: ""
-            } catch (_: Exception) {
-                ""
-            }
+            code = conn.responseCode
+            val text = SocketIo.readResponse(conn).toString(Charsets.UTF_8)
             Resp(code, text, null)
         } catch (e: Exception) {
-            Resp(-1, "", describeError(e))
+            Resp(code, "", describeError(e))
         } finally {
             // 必须保证释放：原来多处分支提前 return 时漏掉 disconnect
             try { conn?.disconnect() } catch (_: Exception) {}

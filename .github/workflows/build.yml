@@ -37,6 +37,12 @@ jobs:
         run: python3 audit/security-phase1/run_security.py --fetch-deps --output build/security-audit
       - name: Configuration transactions and limiter regression
         run: python3 audit/config-phase2/run_config.py --fetch-deps --output build/config-audit
+      - name: Request lifecycle regression (isolated loopback only)
+        run: python3 audit/lifecycle-phase3/run_lifecycle.py --fetch-deps --output build/lifecycle-audit
+      - name: Model and routing semantics regression
+        run: python3 audit/semantics-phase4/run_semantics.py --fetch-deps --output build/semantics-audit
+      - name: Original 28 audit counterexamples (assertions unchanged)
+        run: AUDIT_KOTLIN_LIB="$HOME/.cache/gateway-security-deps" python3 audit/semantics-phase4/regression/run_tests.py --output build/original-audit
       - name: Assemble debug
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
@@ -48,4 +54,7 @@ jobs:
             app/build/reports/**
             build/security-audit/**
             build/config-audit/**
+            build/lifecycle-audit/**
+            build/semantics-audit/**
+            build/original-audit/**
           if-no-files-found: warn

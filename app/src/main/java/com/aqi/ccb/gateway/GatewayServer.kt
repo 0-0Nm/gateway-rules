@@ -27,9 +27,11 @@ class GatewayServer(
     private val limiter: RateLimiter,
     private val localAuth: String,
     virtualModels: List<VirtualModel> = emptyList(),
-    private val bindHost: String = "127.0.0.1"
+    private val bindHost: String = "127.0.0.1",
+    private val upstreamReadTimeoutMs: Int = 90_000
 ) {
-    init { require(bindHost in setOf("127.0.0.1", "0.0.0.0")) { "Unsupported bind address" } }
+    init { require(upstreamReadTimeoutMs in 1..90_000)
+        require(bindHost in setOf("127.0.0.1", "0.0.0.0")) { "Unsupported bind address" } }
     private data class LiveConfig(val providers:List<Provider>,val rules:List<RuleSpec>,val virtualModels:List<VirtualModel>,val revision:Long,val keys:Map<String,String>)
     @Volatile private var live=LiveConfig(providers.toList(),rules.toList(),virtualModels.toList(),0,SecretStore.snapshot())
     private val providers:List<Provider> get()=live.providers
@@ -39,6 +41,7 @@ class GatewayServer(
 
     private val accessPolicy = ServerAccessPolicy(localAuth, loopbackOnly = bindHost == "127.0.0.1")
     private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+    private val activeRequests = java.util.concurrent.ConcurrentHashMap.newKeySet<RequestRun>()
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
@@ -161,6 +164,7 @@ class GatewayServer(
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
         acceptThread = null
+        activeRequests.forEach { it.cancel("server_stopped") }
         clients.forEach { runCatching { it.close() } }
         clients.clear()
         pool.shutdownNow()
@@ -214,7 +218,7 @@ class GatewayServer(
             val body = readExactly(input, bodyLen)
             val client = socket.inetAddress?.hostAddress ?: "?"
             GateLog.requestStart(reqId, method, path, client, headers, body.size)
-            totalRequests++
+            synchronized(this) { totalRequests++ }
 
             when {
                 method == "GET" && path == "/health" -> {
@@ -230,7 +234,7 @@ class GatewayServer(
                     handleModels(output, reqId)
                 }
                 method == "POST" && path == "/v1/chat/completions" -> {
-                    handleChat(output, reqId, body)
+                    runChat(output, reqId, body, socket, input)
                 }
                 else -> {
                     fail(output, 404,
@@ -255,9 +259,6 @@ class GatewayServer(
             clients.remove(socket)
             tcpConnections.decrementAndGet()
             inflight.decrementAndGet()
-            // clientDisconnects 语义：每个连接结束就 +1（原来只在连接数归零时 +1，
-            // 并发下数字完全失真）。
-            clientDisconnects++
             try { socket.close() } catch (_: Exception) {}
         }
     }
@@ -286,11 +287,10 @@ class GatewayServer(
             p.models.values.filter { it.enabled }.forEach { ids.add(it.modelId) }
         }
 
-        val data = ids.joinToString(",") { id ->
-            val owner = if (id in vNames) "gateway:virtual" else "gateway"
-            """{"id":"$id","object":"model","owned_by":"$owner"}"""
-        }
-        writeJson(output, 200, """{"object":"list","data":[$data]}""")
+        val data = org.json.JSONArray()
+        ids.forEach { id -> data.put(org.json.JSONObject().put("id", id).put("object", "model")
+            .put("owned_by", if (id in vNames) "gateway:virtual" else "gateway")) }
+        writeJson(output, 200, org.json.JSONObject().put("object", "list").put("data", data).toString())
         GateLog.info(
             "models",
             "served " + ids.size + " models (virtual=" + vNames.size +
@@ -298,275 +298,295 @@ class GatewayServer(
         )
     }
 
-    private fun handleChat(output: OutputStream, reqId: String, body: ByteArray) {
-        val config=synchronized(this){live}
-        val providers=config.providers
-        val rules=config.rules
-        val virtualModels=config.virtualModels
-        val reqStart = System.currentTimeMillis()
-        val bodyStr = String(body, Charsets.UTF_8)
-        val modelId = extractJsonString(bodyStr, "model") ?: ""
-        val stream = bodyStr.contains("\"stream\"") && bodyStr.contains("true")
-        val sessionId = extractJsonString(bodyStr, "session_id")
-            ?: extractJsonString(bodyStr, "conversation_id")
-            ?: extractJsonString(bodyStr, "user")
-            ?: ""
-        val ctx = RequestCtx(
-            modelId = modelId,
-            reqId = reqId,
-            ruleKey = rules.firstOrNull()?.id ?: "default",
-            sessionId = sessionId,
-            turnIndex = SwitchPolicy.deriveTurnIndex(bodyStr),
-            estTokens = bodyStr.length / 3
-        )
+    private class DownstreamClosed(cause: java.io.IOException) : java.io.IOException("downstream_closed", cause)
+    private class RequestCancelled : java.io.IOException("request_cancelled")
 
-        val rule = rules.firstOrNull { it.enabled }
-        if (rule == null) {
-            fail(output, 503,
-                """{"error":{"message":"no enabled rule","type":"no_rule"}}""",
-                "no enabled rule")
-            return
+    /** One request owns its connection, commit boundary and terminal record. */
+    private class RequestRun(val reqId: String) {
+        val started = System.nanoTime()
+        val owner = Thread.currentThread()
+        val upstream = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>()
+        @Volatile var finished = false
+        @Volatile var cancelled = false
+        @Volatile var cancelReason = "client_disconnect"
+        var committed = false
+        var sent = false
+        var provider = "-"
+        var outcome = "upstream_failure"
+        var reason = "unexpected_failure"
+        var success = false
+        fun elapsed() = (System.nanoTime() - started) / 1_000_000.0
+        fun checkActive() {
+            if (cancelled || Thread.currentThread().isInterrupted) throw RequestCancelled()
         }
-
-        // ---- 虚拟模型优先: 客户端请求的 model 名若命中虚拟模型, 用其绑定的 members 做候选 ----
-        val resolved = VirtualModelResolver.resolve(modelId, virtualModels, providers)
-        // 该虚拟模型绑定的请求变换链（指纹清洗/UA伪装/prompt 注入等）
-        val vmTransforms: List<TransformSpec> = if (resolved != null) {
-            virtualModels.firstOrNull { it.name == modelId && it.enabled }?.transforms ?: emptyList()
-        } else emptyList()
-        var cands: List<Cand>
-        val targetModelId: String
-        if (resolved != null) {
-            // 虚拟模型命中: 候选来自 members, 转发时把 model 改写为各 member 的真实 modelId
-            cands = resolved
-            targetModelId = resolved.firstOrNull()?.m?.modelId ?: modelId
-            cands.forEach { c -> c.why.add("vmodel_target=" + c.m.modelId) }
-        } else {
-            cands = RuleEngine.buildCands(providers, ctx)
-            targetModelId = modelId
+        @Synchronized fun attach(conn: HttpURLConnection) {
+            checkActive()
+            upstream.set(conn)
         }
-        if (cands.isEmpty()) {
-            fail(output, 404,
-                """{"error":{"message":"no provider supports model '$modelId'","type":"no_model"}}""",
-                "model_not_found: " + modelId)
-            return
-        }
-
-        cands = try {
-            RuleEngine.applySelect(cands, ctx, rule.select)
-        } catch (e: Exception) {
-            fail(output, 500,
-                """{"error":{"message":"rule error: ${esc(e.message ?: "")}","type":"rule"}}""",
-                "rule error: " + (e.message ?: ""))
-            return
-        }
-
-        if (cands.isEmpty()) {
-            fail(output, 503,
-                """{"error":{"message":"rule filtered out all providers","type":"no_candidate"}}""",
-                "rule filtered all: no_candidate")
-            return
-        }
-
-        // ---- 模型切换粒度: 按 SESSION/TURN/CALL 重排候选(只调排序, 不硬绑) ----
-        val ordered = SwitchPolicy.reorder(cands, rule.switchGranularity, ctx.sessionId, ctx.turnIndex)
-        GateLog.info(
-            "switch",
-            "gran=" + rule.switchGranularity.name +
-                " session=" + (if (ctx.sessionId.isEmpty()) "-" else ctx.sessionId) +
-                " turn=" + ctx.turnIndex +
-                " order=" + ordered.joinToString(",") { it.p.id }
-        )
-
-        // ---- 执行算子分派 ----
-        // 之前这里完全没读 rule.execute.op，用户在 UI 选 race/hedge 等
-        // 实际都跑 first，属于静默忽略配置。
-        // 现在：已实现的算子正常分派；未实现的显式降级并记录，绝不静默。
-        val execOp = rule.execute.op.ifBlank { "first" }
-        val IMPLEMENTED_OPS = setOf("first")
-        if (execOp !in IMPLEMENTED_OPS) {
-            GateLog.warn(
-                "execute",
-                "op=" + execOp + " 尚未实现，降级为 first（reqId=" + reqId + "）"
-            )
-        }
-
-        // ---- 顺序尝试（first 语义）----
-        // ---- 请求变换：转发前应用（只影响发往上游的 body 与头，不改本地逻辑）----
-        val transformed: TransformedRequest = if (vmTransforms.isNotEmpty()) {
-            RequestTransform.apply(vmTransforms, body).also { tr ->
-                GateLog.info(
-                    "transform",
-                    "vmodel=" + modelId + " chain=" + tr.trace.joinToString(",") +
-                        " body " + body.size + "->" + tr.body.size
-                )
+        @Synchronized fun cancel(why: String) {
+            if (finished || cancelled) return
+            cancelReason = why
+            cancelled = true
+            owner.interrupt()
+            // Some JDK implementations serialize disconnect with a blocked read. Never block
+            // stop()/the cancellation observer on that lock; the read deadline remains a bound.
+            upstream.get()?.let { conn ->
+                Thread({ runCatching { conn.disconnect() } }, "gw-abort").apply { isDaemon = true; start() }
             }
-        } else {
-            TransformedRequest(body, emptyMap(), emptySet(), emptyList())
         }
+        @Synchronized fun markSuccess() {
+            checkActive()
+            success = true; outcome = "success"; reason = "complete_response"
+            finished = true
+        }
+        @Synchronized fun complete() {
+            if (finished) return
+            if (cancelled || owner.isInterrupted) {
+                success = false
+                outcome = "cancelled"
+                reason = if (cancelled) cancelReason else "interrupted"
+            }
+            finished = true
+        }
+        fun output(delegate: OutputStream) = object : OutputStream() {
+            private fun send(action: () -> Unit) {
+                checkActive()
+                // Set BEFORE write: even a throwing write may have transmitted a prefix.
+                committed = true
+                try { action() } catch (e: java.io.IOException) { throw DownstreamClosed(e) }
+            }
+            override fun write(b: Int) = send { delegate.write(b) }
+            override fun write(b: ByteArray, off: Int, len: Int) = send { delegate.write(b, off, len) }
+            override fun flush() = send { delegate.flush() }
+        }
+    }
 
-        var lastErr: String? = null
-        var upstreamAttempted=false
-        var retryWaitMs=0.0
+    // Keep the three-argument entry for JVM integration callers; real sockets use runChat.
+    private fun handleChat(output: OutputStream, reqId: String, body: ByteArray) =
+        runChat(output, reqId, body, null, null)
+
+    private fun runChat(output: OutputStream, reqId: String, body: ByteArray,
+                        socket: Socket?, input: InputStream?) {
+        val run = RequestRun(reqId)
+        activeRequests.add(run)
+        val guarded = run.output(output)
+        try {
+            if (socket != null && input != null) {
+                try { socket.soTimeout = 250 } catch (e: java.io.IOException) { throw DownstreamClosed(e) }
+                Thread({
+                    while (!run.finished && !run.cancelled) {
+                        try {
+                            // A FIN may be a legal request-side half-close: NOT proof of cancellation.
+                            // A reset/read error is cancellation. No pipelining on Connection: close.
+                            if (input.read() < 0) break
+                            run.cancel("unexpected_pipelining")
+                        } catch (_: java.net.SocketTimeoutException) {
+                            // Poll only; inactivity is not cancellation.
+                        } catch (_: java.io.IOException) {
+                            if (!run.finished) run.cancel("client_disconnect")
+                        }
+                    }
+                }, "gw-cancel-watch").apply { isDaemon = true; start() }
+            }
+            routeChat(guarded, body, run)
+        } catch (_: DownstreamClosed) {
+            run.outcome = "cancelled"; run.reason = "client_disconnect"
+        } catch (_: RequestCancelled) {
+            run.outcome = "cancelled"; run.reason = if (run.cancelled) run.cancelReason else "interrupted"
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            run.outcome = "cancelled"; run.reason = "interrupted"
+        } catch (e: Exception) {
+            run.outcome = "upstream_failure"; run.reason = e.javaClass.simpleName
+            if (!run.committed && !run.cancelled) {
+                try { writeJson(guarded, 502, "{\"error\":{\"message\":\"upstream failed\",\"type\":\"upstream\"}}") }
+                catch (_: java.io.IOException) { run.outcome = "cancelled"; run.reason = "client_disconnect" }
+            }
+        } finally {
+            run.complete()
+            activeRequests.remove(run)
+            synchronized(this) {
+                when (run.outcome) {
+                    "success" -> totalOk++
+                    "cancelled" -> { if (run.reason == "client_disconnect") clientDisconnects++; Unit }
+                    "local_reject" -> localRejects++
+                    else -> { totalFail++; noteFailureTs(); latestFailure = run.reason; latestFailureReason = classifyFailure(run.reason) }
+                }
+            }
+            // The only terminal call for chat requests, including invalid input and cancellation.
+            GateLog.requestEnd(reqId, run.success, run.provider, run.elapsed(), listOf(run.outcome, run.reason))
+        }
+    }
+
+    private fun routeChat(output: OutputStream, body: ByteArray, run: RequestRun) {
+        fun reject(code: Int, message: String, type: String = "invalid_request") {
+            run.outcome = "local_reject"; run.reason = type
+            writeJson(output, code, org.json.JSONObject().put("error", org.json.JSONObject()
+                .put("message", message).put("type", type)).toString())
+        }
+        run.checkActive()
+        val bodyStr = String(body, Charsets.UTF_8)
+        val json = try {
+            val tokener = org.json.JSONTokener(bodyStr)
+            val value = tokener.nextValue()
+            require(value is org.json.JSONObject && tokener.nextClean() == 0.toChar())
+            value
+        } catch (_: Exception) { reject(400, "A single JSON object is required"); return }
+        val modelId = json.opt("model") as? String
+        val streamValue = json.opt("stream")
+        if (modelId.isNullOrBlank() || (json.has("stream") && streamValue !is Boolean)) {
+            reject(400, "model must be a nonempty string; stream must be boolean"); return
+        }
+        val stream = streamValue == true
+        val config = synchronized(this) { live }
+        val vm = config.virtualModels.firstOrNull { it.enabled && it.name == modelId }
+        val rule = if (vm?.ruleId?.isNotBlank() == true)
+            config.rules.firstOrNull { it.enabled && it.id == vm.ruleId }
+        else config.rules.firstOrNull { it.enabled }
+        if (rule == null) { reject(503, "No enabled bound rule", "no_rule"); return }
+        if (rule.execute.op.ifBlank { "first" } != "first") {
+            reject(422, "Configured execute operator is not implemented", "unsupported_operator"); return
+        }
+        val sessionId = listOf("session_id", "conversation_id", "user")
+            .firstNotNullOfOrNull { json.opt(it) as? String }.orEmpty()
+        val ctx = RequestCtx(modelId = modelId, reqId = run.reqId, ruleKey = rule.id,
+            sessionId = sessionId, turnIndex = SwitchPolicy.deriveTurnIndex(bodyStr), estTokens = bodyStr.length / 3)
+        val resolved = VirtualModelResolver.resolve(modelId, config.virtualModels, config.providers)
+        var cands = resolved ?: RuleEngine.buildCands(config.providers, ctx)
+        if (cands.isEmpty()) { reject(404, "No provider supports requested model", "no_model"); return }
+        cands = try { RuleEngine.applySelect(cands, ctx, rule.select) }
+        catch (_: Exception) { reject(422, "Rule evaluation failed", "rule"); return }
+        if (cands.isEmpty()) { reject(503, "Rule filtered out all providers", "no_candidate"); return }
+        val ordered = SwitchPolicy.reorder(cands, rule.switchGranularity, ctx.sessionId, ctx.turnIndex)
+        val transformed = if (vm != null && vm.transforms.isNotEmpty()) RequestTransform.apply(vm.transforms, body)
+            else TransformedRequest(body, emptyMap(), emptySet(), emptyList())
+        var attempted = false
+        var denied = false
+        var lastError = "no_candidate"
         for (c in ordered) {
+            run.checkActive()
             val permit = synchronized(this) { limiter.acquire(c.p.id, rule.rateLimitOverride[c.p.id]) }
             if (!permit.ok) {
-                GateLog.rateLimited(reqId, c.p.id, permit.waitMs)
-                lastErr = "rate_limited:${c.p.id}:${permit.reason}"
-                retryWaitMs=maxOf(retryWaitMs,permit.waitMs)
+                denied = true
+                GateLog.rateLimited(run.reqId, c.p.id, permit.waitMs)
                 continue
             }
-            val at = System.currentTimeMillis()
+            val at = System.nanoTime()
+            var code: Int? = null
+            run.provider = c.p.id
+            run.sent = false
             try {
-                if(permit.waitMs>0)Thread.sleep(kotlin.math.ceil(permit.waitMs).toLong())
-                upstreamAttempted=true
-                val conn = openUpstream(c, transformed, targetModelId, config.keys[c.p.apiKeyRef].orEmpty())
-                val code = conn.responseCode
+                if (permit.waitMs > 0) Thread.sleep(kotlin.math.ceil(permit.waitMs).toLong())
+                run.checkActive()
+                attempted = true
+                val conn = openUpstream(c, transformed, config.keys[c.p.apiKeyRef].orEmpty(), run)
+                code = conn.responseCode
+                run.checkActive()
                 if (code in 200..299) {
-                    val latency = (System.currentTimeMillis() - at).toDouble()
-                    c.p.latEwma = c.p.latEwma * 0.8 + latency * 0.2
-                    c.p.errors = 0
-                    // 关键修复：成功即恢复熔断。
-                    // 原来只清 errors，breaker 永远停在 OPEN，
-                    // status 面板一直显示 OPEN 且 opBreakerFilter 长期误判。
-                    if (c.p.breaker != BreakerState.CLOSED) {
-                        GateLog.info("breaker", "recover provider=" + c.p.id)
-                        c.p.breaker = BreakerState.CLOSED
-                        c.p.openUntilMs = 0L
-                    }
-                    c.p.lastUsedMs = System.currentTimeMillis()
-                    limiter.noteSuccess(c.p.id, permit.cooldownGeneration)   // 成功即重置软限流退避
-                    latestRoute = c.m.modelId + "@" + c.p.id
-                    GateLog.attempt(reqId, c.p.id, modelId, true, latency, code, null)
                     relay(output, conn, stream)
-                    SwitchPolicy.onSuccess(
-                        rule.switchGranularity, ctx.sessionId, ctx.turnIndex, c.p.id
-                    )
-                    GateLog.requestEnd(reqId, true, c.p.id,
-                        (System.currentTimeMillis() - reqStart).toDouble(),
-                        c.why + listOf("first_winner", "gran=" + rule.switchGranularity.name))
-                    totalOk++
-                    return
-                } else {
-                    val latency = (System.currentTimeMillis() - at).toDouble()
-                    val errBody = runCatching { conn.errorStream?.readBytes()?.toString(Charsets.UTF_8) }.getOrNull()
-                    c.p.errors += 1
-                    RuntimeState.noteError(c.p.id)
-                    // 429 / 限流：软限流指数退避（照 wb.apk 的 soft_rate_sec）
-                    // 首次歇 softRateSec（默认600s），连续被限 2 倍递增，封顶 softRateMaxSec
-                    val isRateLimited = code == 429 ||
-                        (errBody != null && looksRateLimited(errBody))
-                    if (isRateLimited) {
-                        val restSec = limiter.noteSoftRateLimit(c.p.id)
-                        c.p.breaker = BreakerState.OPEN
-                        c.p.openUntilMs = System.currentTimeMillis() + (restSec * 1000).toLong()
-                        GateLog.warn(
-                            "ratelimit",
-                            "soft_rest provider=" + c.p.id + " " + restSec.toInt() +
-                                "s streak=" + RuntimeState.errorRate(c.p.id, 3_600_000)
-                        )
+                    run.markSuccess()
+                    val latency = (System.nanoTime() - at) / 1_000_000.0
+                    synchronized(c.p) {
+                        c.p.latEwma = c.p.latEwma * 0.8 + latency * 0.2
+                        c.p.errors = 0; c.p.breaker = BreakerState.CLOSED; c.p.openUntilMs = 0L
+                        c.p.lastUsedMs = System.currentTimeMillis()
                     }
-                    // ---- 参数自动修复：400/422 + 文案指向参数问题时，改名重试一次 ----
-                    // 照 wb.apk 的 "max_tokens rejected -> rewritten, retrying in place"
-                    // Automatic request mutation/retry is disabled: a retry must acquire its own permit
-                    // and preserve the caller's requested semantics (handled by the request-lifecycle phase).
-                    GateLog.attempt(reqId, c.p.id, modelId, false, latency, code, errBody?.take(200))
-                    lastErr = "http_$code"
-                    conn.disconnect()
+                    limiter.noteSuccess(c.p.id, permit.cooldownGeneration)
+                    latestRoute = c.m.modelId + "@" + c.p.id
+                    SwitchPolicy.onSuccess(rule.switchGranularity, ctx.sessionId, ctx.turnIndex, c.p.id)
+                    GateLog.attempt(run.reqId, c.p.id, modelId, true, latency, code, null)
+                    return
                 }
-            } catch (e: Exception) {
-                c.p.errors += 1
+                // Status only: never place upstream error bodies (possibly secrets/prompts) in logs.
+                lastError = "http_$code"
+                synchronized(c.p) { c.p.errors++ }
                 RuntimeState.noteError(c.p.id)
-                GateLog.attempt(reqId, c.p.id, modelId, false,
-                    (System.currentTimeMillis() - at).toDouble(), null, e.toString())
-                lastErr = e.toString()
+                if (code == 429) {
+                    val seconds = limiter.noteSoftRateLimit(c.p.id)
+                    synchronized(c.p) { c.p.breaker = BreakerState.OPEN; c.p.openUntilMs = System.currentTimeMillis() + (seconds * 1000).toLong() }
+                }
+                GateLog.attempt(run.reqId, c.p.id, modelId, false, (System.nanoTime() - at) / 1_000_000.0, code, lastError)
+                // Only explicit rejection/unavailability permits first-policy failover.
+                // Transport failures after dispatch (ambiguous billing) NEVER retry.
+                if (code !in setOf(429, 503)) break
+            } catch (e: Exception) {
+                val cancelled = e is DownstreamClosed || e is RequestCancelled || e is InterruptedException || run.cancelled
+                if (cancelled) {
+                    GateLog.attempt(run.reqId, c.p.id, modelId, false, (System.nanoTime() - at) / 1_000_000.0,
+                        code, "cancelled", cancelled = true)
+                    if (e is InterruptedException) Thread.currentThread().interrupt()
+                    if (e is DownstreamClosed) throw e
+                    throw RequestCancelled()
+                }
+                synchronized(c.p) { c.p.errors++ }
+                RuntimeState.noteError(c.p.id)
+                lastError = e.javaClass.simpleName
+                GateLog.attempt(run.reqId, c.p.id, modelId, false, (System.nanoTime() - at) / 1_000_000.0, code, lastError)
+                if (run.sent || run.committed) break
             } finally {
+                val conn = run.upstream.getAndSet(null)
+                try { conn?.disconnect() } catch (_: Exception) {}
                 limiter.release(c.p.id)
             }
         }
-
-        if(!upstreamAttempted && lastErr?.startsWith("rate_limited:")==true) {
-            localRejects++
-            GateLog.requestEnd(reqId,false,"-",(System.currentTimeMillis()-reqStart).toDouble(),listOf("local_rate_limit"))
-            writeJson(output,429,org.json.JSONObject().put("error",org.json.JSONObject()
-                .put("message","All eligible providers are locally rate limited")
-                .put("type","rate_limit").put("retryAfterMs",kotlin.math.ceil(retryWaitMs).toLong())).toString())
-            return
-        }
-        val failReason = lastErr ?: "unknown"
-        totalFail++
-        noteFailureTs()   // 记入失败窗口，供«中断»状态判定
-        latestFailure = failReason
-        latestFailureReason = classifyFailure(failReason)
-        GateLog.requestEnd(reqId, false, "-", 0.0, listOf("all_failed"))
-        writeJson(output, 502, """{"error":{"message":"all providers failed: ${esc(lastErr ?: "")}","type":"upstream"}}""")
+        run.checkActive()
+        if (!attempted && denied) { reject(429, "All eligible providers are locally rate limited", "rate_limit"); return }
+        run.reason = lastError
+        if (!run.committed) writeJson(output, 502,
+            "{\"error\":{\"message\":\"upstream failed\",\"type\":\"upstream\"}}")
     }
 
-    /**
-     * 构造上游请求。
-     * @param tr 已应用变换的请求（body + 头注入/删除指令）
-     * @param targetModelId 虚拟模型命中时需改写的真实 modelId
-     */
-    private fun openUpstream(
-        c: Cand,
-        tr: TransformedRequest,
-        targetModelId: String,
-        apiKey: String,
-    ): HttpURLConnection {
-        val base = c.p.baseUrl.trimEnd('/')
-        val url = URL("$base/chat/completions")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.instanceFollowRedirects = false // Never forward provider credentials to redirects.
-        conn.requestMethod = "POST"
-        conn.doOutput = true
-        conn.connectTimeout = 20_000
-        conn.readTimeout = 90_000
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Accept", "text/event-stream, application/json")
-
-        // 变换注入的头（如伪装 UA）
-        tr.setHeaders.forEach { (k, v) ->
-            if (v.isNotEmpty()) conn.setRequestProperty(k, v)
+    private fun openUpstream(c: Cand, tr: TransformedRequest, apiKey: String, run: RequestRun): HttpURLConnection {
+        val conn = URL(c.p.baseUrl.trimEnd('/') + "/chat/completions").openConnection() as HttpURLConnection
+        try {
+            run.attach(conn) // ownership precedes EVERY operation that may open a socket
+            conn.instanceFollowRedirects = false
+            conn.requestMethod = "POST"; conn.doOutput = true
+            conn.connectTimeout = 20_000; conn.readTimeout = upstreamReadTimeoutMs
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Accept", "text/event-stream, application/json")
+            tr.setHeaders.forEach { (k, v) -> if (v.isNotEmpty()) conn.setRequestProperty(k, v) }
+            if (apiKey.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+            val bytes = org.json.JSONObject(String(tr.body, Charsets.UTF_8)).put("model", c.m.modelId)
+                .toString().toByteArray(Charsets.UTF_8)
+            // Fixed streaming prevents HttpURLConnection transparently replaying buffered POSTs.
+            conn.setFixedLengthStreamingMode(bytes.size)
+            conn.connect()
+            run.checkActive()
+            run.sent = true // outputStream may partially transmit before throwing
+            conn.outputStream.use { it.write(bytes) }
+            return conn
+        } catch (e: Exception) {
+            if (run.upstream.get() !== conn) runCatching { conn.disconnect() }
+            throw e
         }
-
-        val key = apiKey
-        if (key.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $key")
-
-        // 虚拟模型命中：把 body 里的 model 改写成该 member 的真实 modelId
-        var outBody = tr.body
-        if (targetModelId.isNotEmpty() && targetModelId != c.m.modelId) {
-            // targetModelId 已是首个 member；每个候选应各自改写
-        }
-        if (targetModelId.isNotEmpty()) {
-            outBody = runCatching {
-                val j = org.json.JSONObject(String(tr.body, Charsets.UTF_8))
-                j.put("model", c.m.modelId)
-                j.toString().toByteArray(Charsets.UTF_8)
-            }.getOrDefault(tr.body)
-        }
-
-        conn.outputStream.use { it.write(outBody) }
-        return conn
     }
 
-    /** SSE / JSON 字节级透传，不重组、不吞尾包 */
+    /** Byte-preserving relay. Successful headers are not successful completion. */
     private fun relay(output: OutputStream, conn: HttpURLConnection, stream: Boolean) {
         val code = conn.responseCode
-        val isSse = (conn.contentType ?: "").contains("text/event-stream")
-        output.write("HTTP/1.1 $code OK\r\n".toByteArray())
-        output.write("Content-Type: ${if (isSse) "text/event-stream" else "application/json"}\r\n".toByteArray())
-        output.write("Cache-Control: no-cache\r\n".toByteArray())
-        output.write("Connection: close\r\n\r\n".toByteArray())
-        output.flush()
-        val ins: InputStream = conn.inputStream
-        val buf = ByteArray(4096)
-        while (true) {
-            val n = try { ins.read(buf) } catch (e: Exception) { -1 }
-            if (n <= 0) break
-            output.write(buf, 0, n)
+        val isSse = conn.contentType.orEmpty().substringBefore(';').trim().equals("text/event-stream", true)
+        if (stream && !isSse) throw java.io.IOException("Expected SSE response")
+        val expected = SocketIo.responseLength(conn)
+        conn.inputStream.use { input ->
+            output.write(("HTTP/1.1 $code OK\r\nContent-Type: " +
+                (if (isSse) "text/event-stream" else "application/json") +
+                "\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n").toByteArray(Charsets.US_ASCII))
             output.flush()
+            val tracker = if (isSse) SocketIo.SseCompletion() else null
+            val buf = ByteArray(4096)
+            var count = 0L
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                if (n == 0) continue
+                tracker?.accept(buf, n)
+                output.write(buf, 0, n); output.flush()
+                count += n
+            }
+            if (expected != null && count != expected) throw java.io.EOFException("Truncated upstream body")
+            tracker?.requireComplete()
         }
-        conn.disconnect()
     }
 
     // ==================== HTTP 工具 ====================
@@ -810,33 +830,10 @@ class GatewayServer(
         }
     }
 
-    /** 上游即使回 200，正文仍可能写着限流——识别出来同样走软限流 */
-    private fun looksRateLimited(err: String): Boolean {
-        val s = err.lowercase()
-        return s.contains("rate limit") || s.contains("rate_limit") ||
-            s.contains("too many requests") || s.contains("quota exceeded") ||
-            s.contains("请求过于频繁") || s.contains("限流") ||
-            s.contains("调用频率")
-    }
-
     // 转义已抽到 JsonUtil（原与 GateLog 各一份，且都漏了控制字符）
     private fun esc(s: String) = JsonUtil.esc(s)
 
-    private fun extractJsonString(json: String, key: String): String? {
-        val idx = json.indexOf("\"$key\"")
-        if (idx < 0) return null
-        val colon = json.indexOf(':', idx)
-        if (colon < 0) return null
-        var i = colon + 1
-        while (i < json.length && json[i].isWhitespace()) i++
-        if (i >= json.length || json[i] != '"') return null
-        val sb = StringBuilder()
-        i++
-        while (i < json.length && json[i] != '"') {
-            sb.append(json[i]); i++
-        }
-        return sb.toString()
-    }
+
 }
 
 /** API Key 解析：契约里只存 apiKeyRef，实际密钥由调用方注入 */

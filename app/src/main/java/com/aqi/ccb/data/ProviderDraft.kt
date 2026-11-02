@@ -40,7 +40,7 @@ data class ProviderDraft(
     val softRateSec: Double = 600.0,
     val softRateMaxSec: Double = 7200.0,
     val enabled: Boolean = true,
-    val tier: String = "free",
+    val tier: String = "paid",
     /**
      * 加权轮换权重。仅 weighted_rr 算子会用到。
      *
@@ -135,7 +135,7 @@ data class ProviderDraft(
                 softRateSec = rl?.optDouble("softRateSec", 600.0) ?: 600.0,
                 softRateMaxSec = rl?.optDouble("softRateMaxSec", 7200.0) ?: 7200.0,
                 enabled = o.optBoolean("enabled", true),
-                tier = o.optString("tier", "free"),
+                tier = o.optString("tier", "paid"),
                 weight = o.optDouble("weight", 1.0).toString(),
                 quota = if (o.has("quota")) o.optDouble("quota", 0.0).toString() else "",
                 suffixStyle = o.optString("suffixStyle", "AUTO"),

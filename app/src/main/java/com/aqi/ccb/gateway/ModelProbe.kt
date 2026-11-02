@@ -44,145 +44,113 @@ object ModelProbe {
         }
     }
 
-    /**
-     * 对一个 (provider, model) 跑三件套测试。
-     * 全部同步执行，调用方应放在后台线程。
-     */
-    fun probe(
-        baseUrl: String,
-        apiKey: String,
-        modelId: String,
-        timeoutMs: Int = 30000,
-    ): ProbeResult {
-        val base = baseUrl.trimEnd('/')
-        var lastErr: String? = null
+    /** Probe only proves observed behavior. Negative results do not prove permanent lack of support. */
+    fun probe(baseUrl: String, apiKey: String, modelId: String, timeoutMs: Int = 30000): ProbeResult {
+        require(timeoutMs in 1..120_000) { "Probe timeout must be bounded" }
+        val url = baseUrl.trimEnd('/') + "/chat/completions"
+        fun request(stream: Boolean, tools: Boolean = false): String = JSONObject().apply {
+            put("model", modelId); put("stream", stream); put("max_tokens", if (tools) 64 else 8)
+            put("messages", JSONArray().put(JSONObject().put("role", "user").put("content",
+                if (tools) "What is the weather in Beijing? Use get_weather." else "hi")))
+            if (tools) put("tools", JSONArray().put(JSONObject().put("type", "function").put("function",
+                JSONObject().put("name", "get_weather").put("description", "Get weather for a city")
+                    .put("parameters", JSONObject().put("type", "object")
+                        .put("properties", JSONObject().put("city", JSONObject().put("type", "string")))
+                        .put("required", JSONArray().put("city"))))))
+        }.toString()
+        val start = System.nanoTime()
+        val first = HttpUtil.postJson(url, apiKey, request(false), timeoutMs)
+        val latency = (System.nanoTime() - start) / 1_000_000
+        val firstJson = objectOrNull(first.body)
+        if (!first.ok || firstJson == null || !hasMessageContent(firstJson)) {
+            return ProbeResult(false, false, false, latency,
+                if (first.error != null) "non_streaming_transport_error" else "non_streaming_invalid_response_http_${first.code}",
+                "non_streaming=not_proven;streaming=not_tested;tool_call=not_tested")
+        }
+        if (Thread.currentThread().isInterrupted) return ProbeResult(true, false, false, latency, detail = "probe_cancelled")
+        val streamOk = streamEvidence(url, apiKey, request(true), timeoutMs)
+        if (Thread.currentThread().isInterrupted) return ProbeResult(true, streamOk, false, latency, detail = "probe_cancelled")
+        val tool = HttpUtil.postJson(url, apiKey, request(false, true), timeoutMs)
+        val toolOk = tool.ok && objectOrNull(tool.body)?.let { hasRequestedTool(it) } == true
+        return ProbeResult(true, streamOk, toolOk, latency, detail =
+            "non_streaming=observed;streaming=" + (if (streamOk) "observed" else "not_proven") +
+                ";tool_call=" + (if (toolOk) "observed" else "not_proven"))
+    }
 
-        // ---- 1) 非流式 ----
-        val t0 = System.currentTimeMillis()
-        val nonStream = try {
-            val body = JSONObject().apply {
-                put("model", modelId)
-                put("messages", JSONArray().put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", "hi")
-                }))
-                put("max_tokens", 8)
-                put("stream", false)
-            }.toString()
-            val (code, resp) = post("$base/chat/completions", apiKey, body, timeoutMs)
-            if (code in 200..299 && resp.contains("\"choices\"")) true
-            else {
-                lastErr = "http_$code ${resp.take(80)}"
-                false
+    private fun objectOrNull(text: String): JSONObject? = try {
+        val tokener = org.json.JSONTokener(text)
+        val value = tokener.nextValue()
+        if (value is JSONObject && tokener.nextClean() == 0.toChar()) value else null
+    } catch (_: Exception) { null }
+
+    private fun generatedContent(message: JSONObject): Boolean {
+        if (message.has("role") && message.opt("role") != "assistant") return false
+        val content = message.opt("content")
+        if (content is String) return content.isNotBlank()
+        if (content is JSONArray) return (0 until content.length()).any { i ->
+            val part = content.optJSONObject(i)
+            part?.opt("type") == "text" && (part.opt("text") as? String)?.isNotBlank() == true
+        }
+        return false
+    }
+
+    private fun hasMessageContent(json: JSONObject): Boolean {
+        if (json.has("error") && !json.isNull("error")) return false
+        val choices = json.optJSONArray("choices") ?: return false
+        return (0 until choices.length()).any { i ->
+            choices.optJSONObject(i)?.optJSONObject("message")?.let { generatedContent(it) } == true
+        }
+    }
+
+    private fun hasRequestedTool(json: JSONObject): Boolean {
+        if (json.has("error") && !json.isNull("error")) return false
+        fun functionMatches(fn: JSONObject?): Boolean {
+            if (fn == null || fn.opt("name") != "get_weather") return false
+            val args = (fn.opt("arguments") as? String)?.let { objectOrNull(it) } ?: return false
+            return (args.opt("city") as? String)?.isNotBlank() == true
+        }
+        val choices = json.optJSONArray("choices") ?: return false
+        return (0 until choices.length()).any { i ->
+            val msg = choices.optJSONObject(i)?.optJSONObject("message") ?: return@any false
+            if (msg.has("role") && msg.opt("role") != "assistant") return@any false
+            val calls = msg.optJSONArray("tool_calls")
+            val modern = calls != null && (0 until calls.length()).any { n ->
+                val call = calls.optJSONObject(n)
+                call != null && call.opt("type") == "function" &&
+                    (call.opt("id") as? String)?.isNotBlank() == true && functionMatches(call.optJSONObject("function"))
             }
-        } catch (e: Exception) {
-            lastErr = e.toString()
-            false
+            modern || functionMatches(msg.optJSONObject("function_call"))
         }
-        val latency = System.currentTimeMillis() - t0
+    }
 
-        if (!nonStream) {
-            return ProbeResult(false, false, false, latency, lastErr ?: "non-streaming failed")
-        }
-
-        // ---- 2) 流式 ----
-        val streamOk = try {
-            val body = JSONObject().apply {
-                put("model", modelId)
-                put("messages", JSONArray().put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", "hi")
-                }))
-                put("max_tokens", 8)
-                put("stream", true)
-            }.toString()
-            val conn = open("$base/chat/completions", apiKey, body, timeoutMs)
-            val code = conn.responseCode
-            var gotData = false
-            if (code in 200..299) {
-                conn.inputStream.bufferedReader().use { r ->
-                    var lines = 0
-                    while (lines < 200) {
-                        val line = r.readLine() ?: break
-                        lines++
-                        if (line.startsWith("data:")) {
-                            gotData = true
-                            break
-                        }
-                    }
+    private fun streamEvidence(url: String, key: String, body: String, timeoutMs: Int): Boolean {
+        var conn: HttpURLConnection? = null
+        return try {
+            val c = URL(url).openConnection() as HttpURLConnection
+            conn = c
+            c.instanceFollowRedirects = false
+            c.requestMethod = "POST"; c.doOutput = true
+            c.connectTimeout = timeoutMs; c.readTimeout = timeoutMs
+            c.setRequestProperty("Content-Type", "application/json")
+            c.setRequestProperty("Accept", "text/event-stream")
+            if (key.isNotEmpty()) c.setRequestProperty("Authorization", "Bearer $key")
+            val request = body.toByteArray(Charsets.UTF_8)
+            c.setFixedLengthStreamingMode(request.size)
+            c.outputStream.use { it.write(request) }
+            if (c.responseCode !in 200..299 || !c.contentType.orEmpty().substringBefore(';').trim().equals("text/event-stream", true)) return false
+            var generated = false
+            val tracker = SocketIo.SseCompletion { event ->
+                val choices = event.optJSONArray("choices")
+                if (choices != null) for (i in 0 until choices.length()) {
+                    val delta = choices.optJSONObject(i)?.optJSONObject("delta")
+                    if (delta != null && generatedContent(delta)) generated = true
                 }
             }
-            try { conn.disconnect() } catch (_: Exception) {}
-            gotData
-        } catch (e: Exception) {
-            false
-        }
-
-        // ---- 3) 工具调用 ----
-        val toolOk = try {
-            val body = JSONObject().apply {
-                put("model", modelId)
-                put("messages", JSONArray().put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", "What is the weather in Beijing? Use the tool.")
-                }))
-                put("max_tokens", 64)
-                put("stream", false)
-                put("tools", JSONArray().put(JSONObject().apply {
-                    put("type", "function")
-                    put("function", JSONObject().apply {
-                        put("name", "get_weather")
-                        put("description", "Get weather for a city")
-                        put("parameters", JSONObject().apply {
-                            put("type", "object")
-                            put("properties", JSONObject().put(
-                                "city", JSONObject().put("type", "string")
-                            ))
-                            put("required", JSONArray().put("city"))
-                        })
-                    })
-                }))
-            }.toString()
-            val (code, resp) = post("$base/chat/completions", apiKey, body, timeoutMs)
-            code in 200..299 && (resp.contains("tool_calls") || resp.contains("function_call"))
-        } catch (e: Exception) {
-            false
-        }
-
-        return ProbeResult(nonStream, streamOk, toolOk, latency, null)
-    }
-
-    // ---------- HTTP ----------
-
-    /**
-     * 建立连接但**不**立即读取/断开，供流式测试边读边判断。
-     * 与 HttpUtil 的区别：那边是一次性请求，读完即 disconnect。
-     */
-    private fun open(url: String, key: String, body: String, timeoutMs: Int): HttpURLConnection {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.instanceFollowRedirects = false // Never forward provider credentials to redirects.
-        conn.requestMethod = "POST"
-        conn.doOutput = true
-        conn.connectTimeout = timeoutMs
-        conn.readTimeout = timeoutMs
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Accept", "text/event-stream, application/json")
-        if (key.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $key")
-        conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-        return conn
-    }
-
-    /**
-     * 一次性 POST（非流式）。
-     * 注：流式测试仍需用 open() 自己管连接生命周期，
-     * 因为要边读边判断是否收到 data: 行，不能一次性读完就断。
-     */
-    private fun post(url: String, key: String, body: String, timeoutMs: Int): Pair<Int, String> {
-        val r = HttpUtil.postJson(
-            url, key, body, timeoutMs,
-            accept = "text/event-stream, application/json",
-        )
-        if (r.error != null) return -1 to r.error
-        return r.code to r.body
+            val bytes = SocketIo.readResponse(c, 1024 * 1024)
+            tracker.accept(bytes, bytes.size)
+            tracker.requireComplete()
+            generated
+        } catch (_: Exception) { false }
+        finally { runCatching { conn?.disconnect() } }
     }
 }

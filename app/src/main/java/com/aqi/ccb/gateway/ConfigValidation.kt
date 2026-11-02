@@ -41,7 +41,13 @@ object ConfigValidation {
             for(i in 0 until models.length()) {
                 val m=models.optJSONObject(i) ?: fail("Model must be an object")
                 if(!ids.add(id(m,"modelId"))) fail("Duplicate model id")
-                flag(m,"enabled");number(m,"contextLength",integral=true);number(m,"priceInPerM");number(m,"priceOutPerM")
+                flag(m,"enabled");number(m,"contextLength",integral=true)
+                if (m.has("priceVersion") && (m.opt("priceVersion") as? Number)?.toDouble() != ModelPricing.VERSION.toDouble()) fail("Unsupported priceVersion")
+                for (key in listOf("priceInPerM","priceOutPerM")) {
+                    if (m.has(key) && m.isNull(key)) {
+                        if (!m.has("priceVersion")) fail("Null price requires priceVersion")
+                    } else number(m,key)
+                }
                 if(m.has("displayName")&&m.opt("displayName") !is String)fail("displayName must be string")
                 if(m.has("type") && m.optString("type") !in ModelType.values().map{it.name}) fail("Unsupported model type")
                 strings(m,"abilities",ModelAbility.values().map{it.name}.toSet())

@@ -2,6 +2,7 @@ package com.aqi.ccb.data
 
 import org.json.JSONArray
 import org.json.JSONObject
+import com.aqi.ccb.gateway.ModelPricing
 
 /**
  * 单个模型的信息 + 测试结果。
@@ -43,20 +44,12 @@ data class ModelInfo(
     val outputModalities: List<String> = listOf("TEXT"),
     /** 内置工具：搜索/URL/图像生成等，取值见网关 BuiltInTool */
     val tools: List<String> = emptyList(),
-    /**
-     * 输入单价（每百万 token）。0 = 未填。
-     * 单位随意，只要同一批候选之间可比即可（比如都用人民币）。
-     * 上游 /v1/models 不返回价格，只能手填。
-     */
-    val priceInPerM: Double = 0.0,
-    /** 输出单价（每百万 token）。0 = 未填。 */
-    val priceOutPerM: Double = 0.0,
+    /** null=unknown; explicit zero=free. Both prices must be known to compare. */
+    val priceInPerM: Double? = null,
+    val priceOutPerM: Double? = null,
 ) {
-    /** 是否填了价格 */
-    val hasPrice: Boolean get() = priceInPerM > 0 || priceOutPerM > 0
-
-    /** 综合单价，用于横向比较 */
-    val blendedPrice: Double get() = (priceInPerM + priceOutPerM) / 2.0
+    val hasPrice: Boolean get() = ModelPricing.known(priceInPerM, priceOutPerM)
+    val blendedPrice: Double get() = ModelPricing.blended(priceInPerM, priceOutPerM)
     fun statusLabel(): String = when {
         available == null -> "未测"
         available == true && latencyMs >= 0 -> "${latencyMs}ms"
@@ -78,15 +71,19 @@ data class ModelInfo(
         put("inputModalities", JSONArray(inputModalities))
         put("outputModalities", JSONArray(outputModalities))
         put("tools", JSONArray(tools))
-        put("priceInPerM", priceInPerM)
-        put("priceOutPerM", priceOutPerM)
+        put("priceVersion", ModelPricing.VERSION)
+        put("priceInPerM", priceInPerM ?: JSONObject.NULL)
+        put("priceOutPerM", priceOutPerM ?: JSONObject.NULL)
         nonStreaming?.let { put("nonStreaming", it) }
         streaming?.let { put("streaming", it) }
         toolCall?.let { put("toolCall", it) }
     }
 
     companion object {
-        fun fromJson(o: JSONObject): ModelInfo = ModelInfo(
+        fun fromJson(o: JSONObject): ModelInfo {
+            val pricing = ModelPricing.decode(listOf("priceVersion", "priceInPerM", "priceOutPerM")
+                .associateWith { if (o.isNull(it)) null else o.opt(it) })
+            return ModelInfo(
             modelId = o.optString("modelId"),
             displayName = o.optString("displayName", ""),
             contextLength = o.optInt("contextLength", 0),
@@ -111,8 +108,9 @@ data class ModelInfo(
             tools = o.optJSONArray("tools")?.let { a ->
                 (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
             } ?: emptyList(),
-            priceInPerM = o.optDouble("priceInPerM", 0.0),
-            priceOutPerM = o.optDouble("priceOutPerM", 0.0),
+            priceInPerM = pricing.first,
+            priceOutPerM = pricing.second,
         )
+        }
     }
 }

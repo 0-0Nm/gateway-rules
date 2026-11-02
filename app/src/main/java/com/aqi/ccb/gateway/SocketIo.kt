@@ -86,4 +86,73 @@ object SocketIo {
         }
         return out
     }
+
+    /** Validate the actual HTTP framing even when a JDK silently returns early EOF. */
+    fun responseLength(conn: java.net.HttpURLConnection): Long? {
+        if (conn.getHeaderField("Transfer-Encoding") != null) return null
+        val value = conn.getHeaderField("Content-Length") ?: return null
+        return value.trim().toLongOrNull()?.takeIf { it >= 0 }
+            ?: throw java.io.IOException("Invalid upstream Content-Length")
+    }
+
+    fun readResponse(conn: java.net.HttpURLConnection, maximum: Int = MAX_GATEWAY_BODY_BYTES): ByteArray {
+        val length = responseLength(conn)
+        if (length != null && length > maximum) throw java.io.IOException("Upstream body too large")
+        val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+        val out = ByteArrayOutputStream()
+        stream?.use { input ->
+            val buf = ByteArray(4096)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                if (n == 0) continue
+                if (out.size().toLong() + n > maximum) throw java.io.IOException("Upstream body too large")
+                out.write(buf, 0, n)
+            }
+        }
+        if (length != null && out.size().toLong() != length) throw EOFException("Truncated upstream body")
+        return out.toByteArray()
+    }
+
+    /** OpenAI SSE completion, bounded across arbitrary network chunks and multiline events. */
+    class SseCompletion(private val onEvent: (org.json.JSONObject) -> Unit = {}) {
+        private val line = ByteArrayOutputStream()
+        private val data = StringBuilder()
+        private var previousCr = false
+        private var done = false
+        fun accept(bytes: ByteArray, count: Int) {
+            for (i in 0 until count) {
+                val b = bytes[i].toInt() and 255
+                if (b == 10 && previousCr) { previousCr = false; continue }
+                previousCr = b == 13
+                if (b == 10 || b == 13) {
+                    val text = line.toString("UTF-8"); line.reset()
+                    if (text.isEmpty()) {
+                        if (data.isNotEmpty()) {
+                            val event = data.toString().removeSuffix("\n"); data.setLength(0)
+                            if (done) throw java.io.IOException("SSE data after DONE")
+                            if (event.trim() == "[DONE]") done = true
+                            else {
+                                val json = try { org.json.JSONObject(event) } catch (_: Exception) {
+                                    throw java.io.IOException("Invalid SSE JSON")
+                                }
+                                if (json.has("error") && !json.isNull("error")) throw java.io.IOException("Upstream SSE error")
+                                onEvent(json)
+                            }
+                        }
+                    } else if (text == "data" || text.startsWith("data:")) {
+                        val value = if (text == "data") "" else text.substring(5).removePrefix(" ")
+                        if (data.length + value.length > 262144) throw java.io.IOException("SSE event too large")
+                        data.append(value).append('\n')
+                    }
+                } else {
+                    if (line.size() >= 262144) throw java.io.IOException("SSE line too large")
+                    line.write(b)
+                }
+            }
+        }
+        fun requireComplete() {
+            if (!done || data.isNotEmpty() || line.size() != 0) throw EOFException("SSE ended without complete DONE event")
+        }
+    }
 }

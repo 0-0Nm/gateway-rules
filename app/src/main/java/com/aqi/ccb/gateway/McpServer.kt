@@ -332,7 +332,7 @@ class McpServer(
                     put("modelId", str("模型 ID"))
                     put("patch", obj("要修改的字段。可用：displayName enabled type abilities " +
                         "inputModalities outputModalities tools contextLength " +
-                        "priceInPerM priceOutPerM expectedRevision。数组字段传 JSON 数组。"))
+                        "priceInPerM priceOutPerM expectedRevision。数组字段传 JSON 数组。价格null=未知，0=明确零价；输入输出两项齐全才参与价格排序。"))
                 })
                 put("required", JSONArray().put("providerId").put("modelId").put("patch"))
             }

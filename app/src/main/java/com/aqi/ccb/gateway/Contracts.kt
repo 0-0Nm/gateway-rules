@@ -33,6 +33,43 @@ enum class SwitchGranularity {
     }
 }
 
+/** Shared price semantics for runtime and editor. Versionless double-zero was historically unknown. */
+object ModelPricing {
+    const val VERSION = 1
+    fun decode(m: Map<String, Any?>): Pair<Double?, Double?> {
+        fun value(key: String): Double? = (m[key] as? Number)?.toDouble()?.takeIf { it.isFinite() && it >= 0.0 }
+        val input = value("priceInPerM"); val output = value("priceOutPerM")
+        if ((m["priceVersion"] as? Number)?.toDouble() == VERSION.toDouble()) return input to output
+        // Preserve legacy positive-price comparisons; never reinterpret ambiguous old 0/0 as free.
+        return if ((input ?: 0.0) > 0.0 || (output ?: 0.0) > 0.0) (input ?: 0.0) to (output ?: 0.0)
+            else null to null
+    }
+    fun known(input: Double?, output: Double?): Boolean =
+        input != null && output != null && input.isFinite() && output.isFinite() && input >= 0.0 && output >= 0.0
+    fun blended(input: Double?, output: Double?): Double =
+        if (known(input, output)) input!! / 2.0 + output!! / 2.0 else Double.POSITIVE_INFINITY
+    /** Locale independent display: preserve explicit zero and tiny nonzero prices. */
+    fun format(value: Double?): String {
+        if (value == null) return ""
+        require(value.isFinite() && value >= 0.0) { "Invalid price" }
+        return java.math.BigDecimal.valueOf(value).stripTrailingZeros().toPlainString()
+    }
+    /** Accept decimal drafts without trimming a trailing dot or silently deleting signs. */
+    fun editorText(proposed: String): String {
+        if (proposed.isEmpty()) return ""
+        require(Regex("[0-9]*([.][0-9]*)?").matches(proposed)) { "Use a nonnegative decimal price" }
+        val text = if (proposed.startsWith(".")) "0$proposed" else proposed
+        parseInput(text)
+        return text
+    }
+    fun parseInput(text: String): Double? {
+        if (text.isBlank()) return null
+        val value = text.toDoubleOrNull()
+        require(value != null && value.isFinite() && value >= 0.0) { "Price must be a finite nonnegative number" }
+        return value
+    }
+}
+
 data class Model(
     val modelId: String,
     val displayName: String = "",
@@ -58,20 +95,9 @@ data class Model(
      * 未测到就是未知，不该凭空给一个乐观值。
      */
     val contextLength: Int = 0,
-    /**
-     * 输入价格（每百万 token，单位由用户自定，只要横向可比即可）。
-     * 0 表示未填写 —— 未填价的模型不参与「最省优先」比较。
-     *
-     * 为什么必须放在模型级而不是 provider 级：
-     *   同一个 provider 下 gpt-oss-20b 与 nemotron-3-super-120b 价格差几十倍，
-     *   provider 级标签无法表达。
-     * 为什么是用户手填而不是自动拉取：
-     *   实测上游 /v1/models 只返回 id/object/created/owned_by/
-     *   supported_endpoint_types，完全不含价格。
-     */
-    val priceInPerM: Double = 0.0,
-    /** 输出价格（每百万 token）；0=未填 */
-    val priceOutPerM: Double = 0.0,
+    /** Price per million tokens: null=unknown; explicit zero=free. Both sides are needed to compare. */
+    val priceInPerM: Double? = null,
+    val priceOutPerM: Double? = null,
     /**
      * 用户在本 App 的「初次筛选」里是否勾选。
      *
@@ -84,13 +110,12 @@ data class Model(
      */
     val enabled: Boolean = true
 ) {
-    /** 是否填了价格（任一非 0 即算） */
-    val hasPrice: Boolean get() = priceInPerM > 0 || priceOutPerM > 0
-
-    /** 综合单价：输入与输出各半，用于横向比较只看一个数 */
-    val blendedPrice: Double get() = (priceInPerM + priceOutPerM) / 2.0
+    val hasPrice: Boolean get() = ModelPricing.known(priceInPerM, priceOutPerM)
+    val blendedPrice: Double get() = ModelPricing.blended(priceInPerM, priceOutPerM)
     companion object {
-        fun fromJson(m: Map<String, Any?>): Model = Model(
+        fun fromJson(m: Map<String, Any?>): Model {
+            val pricing = ModelPricing.decode(m)
+            return Model(
             modelId = m["modelId"] as? String ?: error("model.modelId required"),
             displayName = m["displayName"] as? String ?: "",
             type = runCatching {
@@ -105,16 +130,21 @@ data class Model(
             abilities = (m["abilities"] as? List<*>)?.mapNotNull {
                 runCatching { ModelAbility.valueOf(it.toString().uppercase()) }.getOrNull()
             } ?: emptyList(),
+            inputModalities = if (!m.containsKey("inputModalities")) listOf(Modality.TEXT) else
+                (m["inputModalities"] as? List<*>)?.mapNotNull { runCatching { Modality.valueOf(it.toString().uppercase()) }.getOrNull() } ?: emptyList(),
+            outputModalities = if (!m.containsKey("outputModalities")) listOf(Modality.TEXT) else
+                (m["outputModalities"] as? List<*>)?.mapNotNull { runCatching { Modality.valueOf(it.toString().uppercase()) }.getOrNull() } ?: emptyList(),
             tools = (m["tools"] as? List<*>)?.mapNotNull {
                 runCatching { BuiltInTool.valueOf(it.toString().uppercase()) }.getOrNull()
             } ?: emptyList(),
             // 与 Model 默认值保持一致：未提供就是 0（未知），不凭空给 128K
             contextLength = (m["contextLength"] as? Number)?.toInt() ?: 0,
-            priceInPerM = (m["priceInPerM"] as? Number)?.toDouble() ?: 0.0,
-            priceOutPerM = (m["priceOutPerM"] as? Number)?.toDouble() ?: 0.0,
+            priceInPerM = pricing.first,
+            priceOutPerM = pricing.second,
             // 必须读：否则 UI 勾选对网关完全无效
             enabled = m["enabled"] as? Boolean ?: true
         )
+        }
     }
 }
 
@@ -157,10 +187,8 @@ data class Provider(
                 kind = p["kind"] as? String ?: "openai",
                 enabled = p["enabled"] as? Boolean ?: true,
                 tier = runCatching {
-                    // 与 ProviderDraft.tier 默认值 "free" 保持一致。
-                    // 原来这里是 paid，UI 是 free，新建 provider 两侧语义相反。
-                    Tier.valueOf((p["tier"] as? String ?: "free").lowercase())
-                }.getOrDefault(Tier.free),
+                    Tier.valueOf((p["tier"] as? String ?: "paid").lowercase())
+                }.getOrDefault(Tier.paid),
                 weight = (p["weight"] as? Number)?.toDouble() ?: 1.0,
                 quota = (p["quota"] as? Number)?.toDouble() ?: 1e9,
                 ratePolicy = rl,

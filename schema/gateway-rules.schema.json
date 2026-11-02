@@ -102,7 +102,32 @@
         },
         "contextLength": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
+        },
+        "priceVersion": {
+          "type": "integer",
+          "const": 1,
+          "description": "Explicit nullable pricing; absent version and legacy 0/0 remain unknown."
+        },
+        "priceInPerM": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "null or missing = unknown; explicit 0 with priceVersion=1 = zero price."
+        },
+        "priceOutPerM": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "null or missing = unknown; explicit 0 with priceVersion=1 = zero price."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
         }
       }
     },
@@ -392,7 +417,7 @@
               }
             }
           },
-          "description": "select operator: canary"
+          "description": "First candidate is canary pool, remaining candidates stable; select one pool by percentage, without cross-pool fallback."
         },
         {
           "type": "object",
