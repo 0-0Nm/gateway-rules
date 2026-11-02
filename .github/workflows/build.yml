@@ -24,7 +24,7 @@ jobs:
       - name: Restore fixed development debug key
         env:
           GATEWAY_DEBUG_KEYSTORE_B64: ${{ secrets.GATEWAY_DEBUG_KEYSTORE_B64 }}
-        run: python3 tools/debug_signing.py restore
+        run: python3 tools/debug_signing.py restore --target "$RUNNER_TEMP/gateway-debug.keystore"
       # NOTE: android-actions/setup-android 已移除 — 它尝试安装已被官方移除的 'tools' 包会失败；
       # ubuntu-latest runner 本身预装 Android SDK (ANDROID_HOME=/usr/local/lib/android/sdk)。
       - uses: gradle/actions/setup-gradle@v3
@@ -52,7 +52,7 @@ jobs:
       - name: Background MCP diagnostics regression
         run: python3 audit/mcp-debug-phase5/run_debug.py --fetch-deps --output build/mcp-debug-audit
       - name: Assemble debug
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: gradle :app:signingReport assembleDebug --no-daemon --stacktrace -PgatewayDebugKeystore="$RUNNER_TEMP/gateway-debug.keystore"
       - name: Verify fixed debug APK certificate
         run: python3 tools/debug_signing.py verify --apk app/build/outputs/apk/debug/app-debug.apk --sdk "$ANDROID_HOME" --output build/debug-signing-audit/results.json
       - uses: actions/upload-artifact@v4

@@ -13,10 +13,10 @@
 - 使用标准Android debug alias与口令，仍须私下保管文件；不是生产release密钥。
 
 ## CI流程
-1. 运行18项签名脚本回归。
-2. 恢复Secret到 `$HOME/.android/debug.keystore`，keytool导出公证书并比对固定指纹。
+1. 运行20项签名脚本回归。
+2. 恢复Secret到 `$RUNNER_TEMP/gateway-debug.keystore`，keytool导出公证书并比对固定指纹。
 3. Secret缺失、内容无效或证书不匹配时失败，不自动生成新的随机debug key。
-4. 保留既有6组业务测试，然后 `gradle assembleDebug`，不修改AGP/Kotlin/Compose版本。
+4. 保留既有6组业务测试，通过 `-PgatewayDebugKeystore` 显式传入同一文件，执行 `gradle :app:signingReport assembleDebug`，不修改AGP/Kotlin/Compose版本。
 5. 用官方apksigner验证最终APK V2签名并比对同一固定指纹；将无密钥的签名结果放入 `build/debug-signing-audit/results.json`。
 
 ## 本地与真实APK验证
@@ -24,7 +24,7 @@
 python3 audit/debug-signing-phase6/test_debug_signing.py
 python3 tools/debug_signing.py verify --apk <debug.apk> --sdk <android-sdk>
 ```
-18项回归含缺失/损坏Secret、证书不匹配不覆盖旧文件、权限0600、拒绝符号链接、重复恢复保持同一身份、禁止隐式随机回退。
+20项回归含缺失/损坏Secret、证书不匹配不覆盖旧文件、权限0600、拒绝符号链接、重复恢复保持同一身份、禁止隐式随机回退。
 另做两次真实固定密钥的独立恢复，均同证书；用真实第五批APK做正反验签：随机旧证书被拒绝，固定debug签名验收副本通过，103个非签名ZIP条目内容一致。
 验收副本仅用于测试门禁，不代替本次GitHub构建产物，不自动安装。
 本批只改工作流/签名工具/测试/说明；Android业务源码和release签名配置保持不变。
@@ -40,3 +40,7 @@ python3 tools/debug_signing.py verify --apk <debug.apk> --sdk <android-sdk>
 baseline-source.tar.gz是66350374当前工作树备份，69文件、382725字节，SHA256已逐项检查。
 不reset --hard、不git clean；回滚先另存当前改动，再按该批精确清单恢复。
 GitHub Secret与源码是两个操作域：回滚代码不代表已删除Secret；不得擅自删除唯一调试密钥。
+
+## 首次云端反例及修正
+运行41423569056的20项之前版本18项测试、密钥恢复、六组业务测试及整包编译都通过，但最终APK证书与固定指纹不一致，门禁真实拒绝。没有放宽指纹或把旧证书当正确。
+修正：不再依赖AGP默认HOME位置；恢复和Gradle debug签名配置显式使用相同RUNNER_TEMP文件，新增2项路径接线回归，输出签名报告。正式release配置不变。需以后续新运行实测结果为准。

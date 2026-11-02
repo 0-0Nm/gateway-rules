@@ -59,4 +59,14 @@ class DebugSigningTests(unittest.TestCase):
         with self.assertRaisesRegex(d.SigningError,'JAR_MISSING'):d.find_signer(self.root/'missing-sdk')
     def test_release_config_untouched(self):
         txt=(ROOT/'app/build.gradle.kts').read_text();self.assertNotIn('signingConfigs.getByName("debug")',txt)
+    def test_ci_passes_same_explicit_private_store_path(self):
+        txt=(ROOT/'.github/workflows/build.yml').read_text()
+        self.assertIn('restore --target "$RUNNER_TEMP/gateway-debug.keystore"',txt)
+        self.assertIn('-PgatewayDebugKeystore="$RUNNER_TEMP/gateway-debug.keystore"',txt)
+    def test_gradle_debug_store_explicit_and_release_unchanged(self):
+        txt=(ROOT/'app/build.gradle.kts').read_text()
+        self.assertIn('gradleProperty("gatewayDebugKeystore")',txt)
+        self.assertIn('storeFile = fixedStore',txt)
+        self.assertIn('require(fixedStore.isFile)',txt)
+        self.assertIn('release { isMinifyEnabled = false }',txt)
 if __name__=='__main__':unittest.main(verbosity=2)

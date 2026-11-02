@@ -22,6 +22,20 @@ android {
         kotlinCompilerExtensionVersion = "1.5.14"
     }
 
+    // CI passes an explicit private debug-store location; never rely on runner HOME defaults.
+    signingConfigs {
+        getByName("debug") {
+            project.providers.gradleProperty("gatewayDebugKeystore").orNull?.let { path ->
+                val fixedStore = project.file(path)
+                require(fixedStore.isFile) { "Configured debug keystore is missing" }
+                storeFile = fixedStore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         debug { isMinifyEnabled = false }
         release { isMinifyEnabled = false }
