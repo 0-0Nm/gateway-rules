@@ -1,0 +1,15 @@
+
+# Generated local audit and secret-bearing configuration must not be published.
+**/local.properties
+**/build/
+.gradle/
+.gh_token
+.env
+*.keystore
+*.jks
+cfg_keys*.json
+keys.json
+audit/**/run/
+audit/**/*.jar
+audit/**/*.tar.gz
+audit/**/deps/

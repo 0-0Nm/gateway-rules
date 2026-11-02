@@ -41,7 +41,8 @@ object HttpUtil {
         apiKey: String = "",
         timeoutMs: Int = 15_000,
         accept: String = "application/json",
-    ): Resp = execute("GET", url, apiKey, null, timeoutMs, accept)
+        headers: Map<String, String> = emptyMap(),
+    ): Resp = execute("GET", url, apiKey, null, timeoutMs, accept, headers)
 
     /**
      * POST JSON 请求。
@@ -76,14 +77,17 @@ object HttpUtil {
         jsonBody: String?,
         timeoutMs: Int,
         accept: String,
+        headers: Map<String, String> = emptyMap(),
     ): Resp {
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
                 requestMethod = method
                 connectTimeout = timeoutMs
                 readTimeout = timeoutMs
                 setRequestProperty("Accept", accept)
+                headers.forEach { (key, value) -> setRequestProperty(key, value) }
                 if (apiKey.isNotEmpty()) {
                     setRequestProperty("Authorization", "Bearer $apiKey")
                 }

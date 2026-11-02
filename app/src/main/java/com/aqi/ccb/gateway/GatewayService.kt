@@ -136,10 +136,14 @@ class GatewayService : Service() {
             return START_NOT_STICKY
         }
 
-        val port = intent?.getIntExtra("port", 38080) ?: 38080
+        val configuredPort = com.aqi.ccb.data.AppSettings.gatewayPort(this)
+        val port = intent?.getIntExtra("port", configuredPort) ?: configuredPort
+        if (port !in 1024..65535) { stopSelf(); return START_NOT_STICKY }
+        val bindHost = if (com.aqi.ccb.data.AppSettings.gatewayLanEnabled(this)) "0.0.0.0" else "127.0.0.1"
+        com.aqi.ccb.data.ProviderRepo.warmUpSecrets(this)
 
         createChannel()
-        startForeground(NOTIF_ID, buildNotif("网关 @ 127.0.0.1:$port"))
+        startForeground(NOTIF_ID, buildNotif("网关 @ $bindHost:$port · 需访问令牌"))
         acquireWakeLock()
 
         // 反复触发也先停旧再建，避免端口占用
@@ -155,7 +159,8 @@ class GatewayService : Service() {
         providers.forEach { policies[it.id] = it.ratePolicy }
         val limiter = RateLimiter(policies, RatePolicy())
 
-        val srv = GatewayServer(port, providers, rules, limiter, "", vmodels)
+        val srv = GatewayServer(port, providers, rules, limiter,
+            LocalAccessTokens.gateway(this), vmodels, bindHost)
         // 优先用 Activity 预设值，其次用本服务缓存
         srv.logDirPath = if (pendingLogDir.isNotEmpty()) pendingLogDir else lastLogDir
         srv.configDirPath = filesDir.absolutePath
@@ -170,10 +175,14 @@ class GatewayService : Service() {
         if (ok) {
             current = srv
             notifyState(true, srv.port, null)
-            GateLog.info("gw", "service running on 0.0.0.0:" + srv.port + " (foreground)")
+            GateLog.info("gw", "service running on " + bindHost + ":" + srv.port + " (foreground)")
         } else {
             notifyState(false, 0, srv.lastError)
             GateLog.error("gw", "service failed to bind " + port)
+            releaseWakeLock()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
         }
 
         // 悬浮球自愈（与 McpService 双保险，谁先启动谁挂，ensureAttached 幂等）

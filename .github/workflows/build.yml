@@ -3,6 +3,13 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,6 +31,10 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
           ls "$ANDROID_HOME/platforms" || true
           ls "$ANDROID_HOME/build-tools" || true
+      - name: Reject source-embedded credentials
+        run: python3 tools/check_secrets.py
+      - name: Security regression tests (isolated loopback only)
+        run: python3 audit/security-phase1/run_security.py --fetch-deps --output build/security-audit
       - name: Assemble debug
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
@@ -33,4 +44,5 @@ jobs:
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/reports/**
+            build/security-audit/**
           if-no-files-found: warn

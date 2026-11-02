@@ -119,8 +119,15 @@ class McpService : Service() {
             return START_NOT_STICKY
         }
 
-        val host = intent?.getStringExtra("host") ?: "127.0.0.1"
-        val port = intent?.getIntExtra("port", 38081) ?: 38081
+        if (!com.aqi.ccb.data.AppSettings.mcpEnabled(this)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // The control plane cannot opt into LAN binding through an Intent extra.
+        val host = "127.0.0.1"
+        val configuredPort = com.aqi.ccb.data.AppSettings.mcpPort(this)
+        val port = intent?.getIntExtra("port", configuredPort) ?: configuredPort
+        if (port !in 1024..65535) { stopSelf(); return START_NOT_STICKY }
 
         createChannel()
         startForeground(NOTIF_ID, buildNotif("MCP @ $host:$port"))
@@ -130,7 +137,8 @@ class McpService : Service() {
         current?.stop()
         current = null
 
-        val srv = McpServer(port, 38080) { McpBridge(this) }
+        val srv = McpServer(port, com.aqi.ccb.data.AppSettings.gatewayPort(this),
+            LocalAccessTokens.mcp(this)) { McpBridge(applicationContext) }
         val ok = try {
             srv.start()
         } catch (e: Exception) {
@@ -144,6 +152,10 @@ class McpService : Service() {
         } else {
             notifyState(false, "", 0)
             GateLog.error("mcp", "service failed to bind $port")
+            releaseWakeLock()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
         }
 
         // 悬浮球自愈：进程被杀后系统以 START_STICKY 重启本服务，

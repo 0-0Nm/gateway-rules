@@ -1,74 +1,88 @@
 package com.aqi.ccb.gateway
 
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
 import java.io.InputStream
+import java.util.Locale
 
-/**
- * 极简 HTTP 报文读写工具。
- *
- * 为什么抽出来：
- *   GatewayServer 和 McpServer 各自实现了一份 readHeader / readExactly，
- *   逻辑完全相同（只差一处toString缓存），属于典型重复。
- *   改一处忘另一处的风险是真实的——本项目的多数 bug 都源于此模式：
- *   默认值重复、状态源重复、WakeLock 各自实现……同一个道理。
- *
- * 只做最基础的事：读到 \r\n\r\n 为止、按长度精确读 body。
- * 不做 chunked、不做 keep-alive——两个 server 都是短连接。
- */
+/** HTTP/1.1 short-connection framing. Unsupported transfer encoding is rejected. */
 object SocketIo {
+    const val MAX_HEADER_BYTES = 32 * 1024
+    const val MAX_MCP_BODY_BYTES = 1024 * 1024
+    const val MAX_GATEWAY_BODY_BYTES = 8 * 1024 * 1024
+    class HttpInputException(val status: Int, message: String) : java.io.IOException(message)
+    data class RequestHead(val method: String, val path: String, val headers: Map<String, String>)
 
-    /** 单个请求头最大字节数，超过视为异常请求直接断开 */
-    private const val MAX_HEADER = 32 * 1024
-
-    /**
-     * 读到空行（\r\n\r\n）为止，返回不含末尾空行的头文本。
-     * 流已结束且无内容时返回 null。
-     */
     fun readHeader(input: InputStream): String? {
-        val sb = StringBuilder()
-        var prev = -1
+        val out = ByteArrayOutputStream()
+        var tail = 0
         while (true) {
             val b = input.read()
-            if (b < 0) return if (sb.isEmpty()) null else sb.toString()
-            sb.append(b.toChar())
-            if (prev == '\r'.code && b == '\n'.code) {
-                // 只在刚闭合一个 CRLF 时检查，避免每字节都 toString
-                val s = sb.toString()
-                if (s.endsWith("\r\n\r\n")) return s.dropLast(2)
+            if (b < 0) return null // never process a partial header
+            if (b == 0 || (b < 32 && b != 9 && b != 10 && b != 13)) {
+                throw HttpInputException(400, "Invalid header character")
             }
-            prev = b
-            if (sb.length > MAX_HEADER) return null
+            out.write(b)
+            if (out.size() > MAX_HEADER_BYTES) throw HttpInputException(431, "Headers too large")
+            tail = (tail shl 8) or b
+            if (tail == 0x0d0a0d0a) return out.toString("ISO-8859-1").dropLast(2)
         }
     }
 
-    /**
-     * 精确读取 len 字节。
-     * 流提前结束则返回已读到的部分（调用方按实际长度处理）。
-     */
-    fun readExactly(input: InputStream, len: Int): ByteArray {
-        val out = ByteArrayOutputStream(len)
-        val buf = ByteArray(4096)
-        var remaining = len
-        while (remaining > 0) {
-            val n = input.read(buf, 0, minOf(buf.size, remaining))
-            if (n <= 0) break
-            out.write(buf, 0, n)
-            remaining -= n
+    fun parseRequestHead(text: String): RequestHead {
+        val first = text.substringBefore("\r\n").split(' ')
+        if (first.size != 3 || first[2] != "HTTP/1.1" || !first[1].startsWith("/") ||
+            first[1].contains('#') || first[1].any { it <= ' ' }) {
+            throw HttpInputException(400, "Invalid request line")
         }
-        return out.toByteArray()
+        if (!Regex("[A-Z]+").matches(first[0])) throw HttpInputException(400, "Invalid method")
+        return RequestHead(first[0], first[1].substringBefore('?'), parseHeaders(text))
     }
 
-    /** 解析请求头为小写 key 的 map（冒号后去空格） */
     fun parseHeaders(headerText: String): LinkedHashMap<String, String> {
         val out = LinkedHashMap<String, String>()
-        val lines = headerText.split("\r\n")
-        for (i in 1 until lines.size) {
-            val line = lines[i]
+        for (line in headerText.split("\r\n").drop(1)) {
+            if (line.isEmpty()) continue
             val idx = line.indexOf(':')
-            if (idx > 0) {
-                out[line.substring(0, idx).trim().lowercase()] =
-                    line.substring(idx + 1).trim()
+            if (idx <= 0 || line[0].isWhitespace()) throw HttpInputException(400, "Invalid header")
+            val rawName = line.substring(0, idx)
+            if (!Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+").matches(rawName)) {
+                throw HttpInputException(400, "Invalid header name")
             }
+            val name = rawName.lowercase(Locale.ROOT)
+            if (out.containsKey(name)) throw HttpInputException(400, "Duplicate header")
+            val value = line.substring(idx + 1).trim(' ', '\t')
+            if (value.any { it == '\r' || it == '\n' || it == 127.toChar() }) {
+                throw HttpInputException(400, "Invalid header value")
+            }
+            out[name] = value
+        }
+        if (!out.containsKey("host")) throw HttpInputException(400, "Host required")
+        return out
+    }
+
+    fun contentLength(headers: Map<String, String>, maximum: Int): Int {
+        if (headers.containsKey("transfer-encoding")) throw HttpInputException(400, "Transfer-Encoding unsupported")
+        if (headers.containsKey("expect")) throw HttpInputException(417, "Expect unsupported")
+        val raw = headers["content-length"] ?: return 0
+        if (!Regex("[0-9]+").matches(raw)) throw HttpInputException(400, "Invalid Content-Length")
+        val value = raw.toLongOrNull() ?: throw HttpInputException(413, "Body too large")
+        if (value > maximum) throw HttpInputException(413, "Body too large")
+        return value.toInt()
+    }
+
+    fun readExactly(input: InputStream, len: Int): ByteArray {
+        if (len < 0 || len > MAX_GATEWAY_BODY_BYTES) throw HttpInputException(413, "Body too large")
+        val out = ByteArray(len)
+        var used = 0
+        while (used < len) {
+            val n = input.read(out, used, len - used)
+            if (n < 0) throw EOFException("Truncated request body")
+            if (n == 0) {
+                val b = input.read()
+                if (b < 0) throw EOFException("Truncated request body")
+                out[used++] = b.toByte()
+            } else used += n
         }
         return out
     }

@@ -25,9 +25,13 @@ class GatewayServer(
     private var providers: List<Provider>,
     private var rules: List<RuleSpec>,
     private val limiter: RateLimiter,
-    private val localAuth: String = "",
-    private var virtualModels: List<VirtualModel> = emptyList()
+    private val localAuth: String,
+    private var virtualModels: List<VirtualModel> = emptyList(),
+    private val bindHost: String = "127.0.0.1"
 ) {
+    init { require(bindHost in setOf("127.0.0.1", "0.0.0.0")) { "Unsupported bind address" } }
+    private val accessPolicy = ServerAccessPolicy(localAuth, loopbackOnly = bindHost == "127.0.0.1")
+    private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
@@ -37,7 +41,7 @@ class GatewayServer(
     private val pool = java.util.concurrent.ThreadPoolExecutor(
         4, 64, 60L, java.util.concurrent.TimeUnit.SECONDS,
         java.util.concurrent.SynchronousQueue(),
-        java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy()
+        java.util.concurrent.ThreadPoolExecutor.AbortPolicy()
     )
     private val inflight = AtomicInteger(0)
 
@@ -111,20 +115,25 @@ class GatewayServer(
             // 同 McpServer：显式绑 0.0.0.0，避免 IPv6-only 导致 127.0.0.1 连不上
             val ss = ServerSocket()
             ss.reuseAddress = true
-            ss.bind(java.net.InetSocketAddress(java.net.InetAddress.getByName("0.0.0.0"), port))
+            ss.bind(java.net.InetSocketAddress(java.net.InetAddress.getByName(bindHost), port))
             serverSocket = ss
             running.set(true)
             acceptThread = Thread({
                 while (running.get()) {
                     try {
                         val s = ss.accept()
-                        pool.execute { handleConnection(s) }
+                        clients.add(s)
+                        try { pool.execute { handleConnection(s) } }
+                        catch (_: java.util.concurrent.RejectedExecutionException) {
+                            clients.remove(s)
+                            s.close()
+                        }
                     } catch (e: Exception) {
                         if (running.get()) GateLog.error("gw", "accept failed", e)
                     }
                 }
             }, "gw-accept").apply { isDaemon = true; start() }
-            actualBind = "0.0.0.0:$port"
+            actualBind = "$bindHost:$port"
             startedAtMs = System.currentTimeMillis()
             GateLog.info("gw", "listening $actualBind providers=${providers.size} rules=${rules.size}")
             true
@@ -140,6 +149,9 @@ class GatewayServer(
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
         acceptThread = null
+        clients.forEach { runCatching { it.close() } }
+        clients.clear()
+        pool.shutdownNow()
         GateLog.info("gw", "stopped")
     }
 
@@ -172,49 +184,40 @@ class GatewayServer(
             val output = socket.getOutputStream()
 
             val head = readHeader(input) ?: return
-            val lines = head.split("\r\n")
-            if (lines.isEmpty()) return
-            val requestLine = lines[0].split(" ")
-            if (requestLine.size < 2) return
-            val method = requestLine[0]
-            val path = requestLine[1]
-
-            val headers = LinkedHashMap<String, String>()
-            for (i in 1 until lines.size) {
-                val idx = lines[i].indexOf(':')
-                if (idx > 0) headers[lines[i].substring(0, idx).trim().lowercase()] =
-                    lines[i].substring(idx + 1).trim()
+            val request = SocketIo.parseRequestHead(head)
+            val headers = request.headers
+            val method = request.method
+            val path = request.path
+            val denied = accessPolicy.rejectStatus(headers, socket.localPort, socket.inetAddress.isLoopbackAddress)
+            if (denied != null) {
+                localRejects++
+                writeJson(output, denied, "{\"error\":{\"message\":\"access denied\",\"type\":\"auth\"}}")
+                return
             }
-
-            val bodyLen = headers["content-length"]?.toIntOrNull() ?: 0
-            val body = if (bodyLen > 0) readExactly(input, bodyLen) else ByteArray(0)
-
+            val bodyLen = SocketIo.contentLength(headers, SocketIo.MAX_GATEWAY_BODY_BYTES)
+            if (method == "POST" && !headers["content-type"].orEmpty().substringBefore(';').trim().equals("application/json", true)) {
+                writeJson(output, 415, "{\"error\":{\"message\":\"application/json required\",\"type\":\"invalid_request\"}}")
+                return
+            }
+            val body = readExactly(input, bodyLen)
             val client = socket.inetAddress?.hostAddress ?: "?"
             GateLog.requestStart(reqId, method, path, client, headers, body.size)
             totalRequests++
 
-            if (!authorized(headers)) {
-                fail(output, 401,
-                    """{"error":{"message":"unauthorized","type":"auth"}}""",
-                    "http_401 unauthorized",
-                    countAsUpstreamFail = false)
-                return
-            }
-
             when {
-                method == "GET" && path.startsWith("/health") -> {
+                method == "GET" && path == "/health" -> {
                     writeJson(output, 200, """{"status":"ok","running":${running.get()},"port":$port}""")
                 }
-                method == "GET" && path.startsWith("/v1/_gw/diag") -> {
+                method == "GET" && path == "/v1/_gw/diag" -> {
                     writeJson(output, 200, diagJson())
                 }
-                method == "GET" && path.startsWith("/v1/_gw/status") -> {
+                method == "GET" && path == "/v1/_gw/status" -> {
                     writeJson(output, 200, statusJson())
                 }
-                method == "GET" && path.startsWith("/v1/models") -> {
+                method == "GET" && path == "/v1/models" -> {
                     handleModels(output, reqId)
                 }
-                method == "POST" && path.startsWith("/v1/chat/completions") -> {
+                method == "POST" && path == "/v1/chat/completions" -> {
                     handleChat(output, reqId, body)
                 }
                 else -> {
@@ -225,9 +228,19 @@ class GatewayServer(
                 }
             }
             GateLog.info("http", "done rid=$reqId ${System.currentTimeMillis() - t0}ms")
+        } catch (e: SocketIo.HttpInputException) {
+            localRejects++
+            runCatching { writeJson(socket.getOutputStream(), e.status, "{\"error\":{\"message\":\"invalid HTTP framing\",\"type\":\"invalid_request\"}}") }
+        } catch (_: java.io.EOFException) {
+            localRejects++
+            runCatching { writeJson(socket.getOutputStream(), 400, "{\"error\":{\"message\":\"truncated body\",\"type\":\"invalid_request\"}}") }
+        } catch (_: java.net.SocketTimeoutException) {
+            localRejects++
+            runCatching { writeJson(socket.getOutputStream(), 408, "{\"error\":{\"message\":\"request timeout\",\"type\":\"invalid_request\"}}") }
         } catch (e: Exception) {
-            GateLog.error("gw", "connection error rid=$reqId", e)
+            GateLog.warn("gw", "connection error rid=$reqId class=" + e.javaClass.simpleName)
         } finally {
+            clients.remove(socket)
             tcpConnections.decrementAndGet()
             inflight.decrementAndGet()
             // clientDisconnects 语义：每个连接结束就 +1（原来只在连接数归零时 +1，
@@ -506,6 +519,7 @@ class GatewayServer(
         val base = c.p.baseUrl.trimEnd('/')
         val url = URL("$base/chat/completions")
         val conn = url.openConnection() as HttpURLConnection
+        conn.instanceFollowRedirects = false // Never forward provider credentials to redirects.
         conn.requestMethod = "POST"
         conn.doOutput = true
         conn.connectTimeout = 20_000
@@ -591,7 +605,9 @@ class GatewayServer(
 
     private fun writeJson(output: OutputStream, code: Int, json: String) {
         val bytes = json.toByteArray(Charsets.UTF_8)
-        output.write("HTTP/1.1 $code OK\r\n".toByteArray())
+        output.write("HTTP/1.1 $code ${if (code == 200) "OK" else "Error"}\r\n".toByteArray())
+        if (code == 401) output.write("WWW-Authenticate: Bearer realm=\"GatewayRules\"\r\n".toByteArray())
+        output.write("Cache-Control: no-store\r\n".toByteArray())
         output.write("Content-Type: application/json\r\n".toByteArray())
         output.write("Content-Length: ${bytes.size}\r\n".toByteArray())
         output.write("Connection: close\r\n\r\n".toByteArray())
@@ -599,11 +615,6 @@ class GatewayServer(
         output.flush()
     }
 
-    private fun authorized(h: Map<String, String>): Boolean {
-        if (localAuth.isEmpty()) return true
-        val a = h["authorization"] ?: return false
-        return a == "Bearer $localAuth"
-    }
 
     /**
      * 诊断端点 —— 供外部（AI/curl）自助排查，无需人工手测。

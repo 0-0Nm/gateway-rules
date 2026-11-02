@@ -34,8 +34,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 class McpServer(
     val port: Int,   // 公开：供 UI 显示「实际监听的端口」
     private val gatewayPort: Int,
+    private val accessToken: String,
     private val configProvider: () -> McpConfig,
 ) {
+    private val accessPolicy = ServerAccessPolicy(accessToken)
+    private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
@@ -43,7 +46,7 @@ class McpServer(
     private val pool = java.util.concurrent.ThreadPoolExecutor(
         2, 16, 60L, java.util.concurrent.TimeUnit.SECONDS,
         java.util.concurrent.SynchronousQueue(),
-        java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy()
+        java.util.concurrent.ThreadPoolExecutor.AbortPolicy()
     )
 
     @Volatile var lastError: String? = null
@@ -78,14 +81,19 @@ class McpServer(
             // 导致客户端用 127.0.0.1 连不上。显式绑 0.0.0.0 保证 IPv4 + IPv6 双栈可用。
             val ss = ServerSocket()
             ss.reuseAddress = true
-            ss.bind(java.net.InetSocketAddress(java.net.InetAddress.getByName("0.0.0.0"), port))
+            ss.bind(java.net.InetSocketAddress(java.net.InetAddress.getByName("127.0.0.1"), port))
             serverSocket = ss
             running.set(true)
             acceptThread = Thread({
                 while (running.get()) {
                     try {
                         val s = ss.accept()
-                        pool.execute { handle(s) }
+                        clients.add(s)
+                        try { pool.execute { handle(s) } }
+                        catch (_: java.util.concurrent.RejectedExecutionException) {
+                            clients.remove(s)
+                            s.close()
+                        }
                     } catch (e: Exception) {
                         if (running.get()) GateLog.error("mcp", "accept failed", e)
                     }
@@ -104,6 +112,9 @@ class McpServer(
         running.set(false)
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
+        clients.forEach { runCatching { it.close() } }
+        clients.clear()
+        pool.shutdownNow()
         GateLog.info("mcp", "stopped")
     }
 
@@ -117,38 +128,29 @@ class McpServer(
             val output = socket.getOutputStream()
 
             val head = readHeader(input) ?: return
-            val lines = head.split("\r\n")
-            if (lines.isEmpty()) return
-            val reqLine = lines[0].split(" ")
-            if (reqLine.size < 2) return
-            val method = reqLine[0]
-            val path = reqLine[1]
-
-            val headers = LinkedHashMap<String, String>()
-            for (i in 1 until lines.size) {
-                val idx = lines[i].indexOf(':')
-                if (idx > 0) headers[lines[i].substring(0, idx).trim().lowercase()] =
-                    lines[i].substring(idx + 1).trim()
-            }
-            val bodyLen = headers["content-length"]?.toIntOrNull() ?: 0
-            val body = if (bodyLen > 0) readExactly(input, bodyLen) else ByteArray(0)
-
-            // CORS 预检
-            if (method == "OPTIONS") {
-                writeResp(output, 204, "")
+            val request = SocketIo.parseRequestHead(head)
+            val headers = request.headers
+            val method = request.method
+            val path = request.path
+            val denied = accessPolicy.rejectStatus(headers, socket.localPort, socket.inetAddress.isLoopbackAddress)
+            if (denied != null) {
+                writeJson(output, denied, "{\"error\":\"access denied\"}")
                 return
             }
-
-            if (method == "GET" && (path.startsWith("/health") || path == "/")) {
-                writeJson(output, 200, """{"status":"ok","mcp":true,"port":$port,"gateway":$gatewayPort}""")
+            val bodyLen = SocketIo.contentLength(headers, SocketIo.MAX_MCP_BODY_BYTES)
+            if (method == "GET" && path == "/health") {
+                writeJson(output, 200, "{\"status\":\"ok\",\"mcp\":true,\"port\":$port,\"gateway\":$gatewayPort}")
                 return
             }
-
-            if (method != "POST" || !path.startsWith("/mcp")) {
-                GateLog.warn("mcp", "reject " + method + " " + path + " from=" + socket.inetAddress?.hostAddress)
-                writeJson(output, 404, """{"error":"not found"}""")
+            if (method != "POST" || path != "/mcp") {
+                writeJson(output, 404, "{\"error\":\"not found\"}")
                 return
             }
+            if (!headers["content-type"].orEmpty().substringBefore(';').trim().equals("application/json", true)) {
+                writeJson(output, 415, "{\"error\":\"application/json required\"}")
+                return
+            }
+            val body = readExactly(input, bodyLen)
 
             totalCalls++
             lastCallAt = System.currentTimeMillis()
@@ -176,9 +178,16 @@ class McpServer(
                 )
                 writeJson(output, 200, resp)
             }
+        } catch (e: SocketIo.HttpInputException) {
+            runCatching { writeJson(socket.getOutputStream(), e.status, "{\"error\":\"invalid HTTP framing\"}") }
+        } catch (_: java.io.EOFException) {
+            runCatching { writeJson(socket.getOutputStream(), 400, "{\"error\":\"truncated body\"}") }
+        } catch (_: java.net.SocketTimeoutException) {
+            runCatching { writeJson(socket.getOutputStream(), 408, "{\"error\":\"request timeout\"}") }
         } catch (e: Exception) {
-            GateLog.error("mcp", "handle error", e)
+            GateLog.warn("mcp", "handle failed: " + e.javaClass.simpleName)
         } finally {
+            clients.remove(socket)
             try { socket.close() } catch (_: Exception) {}
         }
     }
@@ -489,7 +498,10 @@ class McpServer(
                 put("type", "text")
                 put("text", text)
             }))
-            put("isError", false)
+            val payload = runCatching { JSONObject(text) }.getOrNull()
+            put("isError", payload == null ||
+                (payload.has("ok") && !payload.optBoolean("ok", false)) ||
+                (payload.has("error") && !payload.isNull("error")))
         }
     }
 
@@ -552,14 +564,21 @@ class McpServer(
         output.flush()
     }
 
+    private fun httpReason(code: Int): String = when (code) {
+        200 -> "OK"; 202 -> "Accepted"; 204 -> "No Content"
+        400 -> "Bad Request"; 401 -> "Unauthorized"; 403 -> "Forbidden"; 404 -> "Not Found"
+        408 -> "Request Timeout"; 413 -> "Content Too Large"; 415 -> "Unsupported Media Type"
+        417 -> "Expectation Failed"; 431 -> "Request Header Fields Too Large"
+        else -> "Error"
+    }
+
     private fun writeResp(output: OutputStream, code: Int, body: String) {
         val bytes = body.toByteArray(Charsets.UTF_8)
         val sb = StringBuilder()
-        sb.append("HTTP/1.1 ").append(code).append(if (code == 200) " OK" else " No Content").append("\r\n")
+        sb.append("HTTP/1.1 ").append(code).append(" ").append(httpReason(code)).append("\r\n")
+        if (code == 401) sb.append("WWW-Authenticate: Bearer realm=\"GatewayRules-MCP\"\r\n")
+        sb.append("Cache-Control: no-store\r\n")
         sb.append("Content-Type: application/json\r\n")
-        sb.append("Access-Control-Allow-Origin: *\r\n")
-        sb.append("Access-Control-Allow-Headers: *\r\n")
-        sb.append("Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n")
         sb.append("Content-Length: ").append(bytes.size).append("\r\n")
         sb.append("Connection: close\r\n\r\n")
         output.write(sb.toString().toByteArray())

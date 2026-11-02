@@ -1,0 +1,44 @@
+[
+  {
+    "name": "kotlin-compiler-embeddable-2.0.21.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21/kotlin-compiler-embeddable-2.0.21.jar",
+    "size": 58272093,
+    "sha256": "9fa8cdd1de0dccffe154c997d423ec6b5f53cd6d9177e3a77a9b0de03fb1bc81"
+  },
+  {
+    "name": "kotlin-stdlib-2.0.21.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.0.21/kotlin-stdlib-2.0.21.jar",
+    "size": 1747660,
+    "sha256": "f31cc53f105a7e48c093683bbd5437561d1233920513774b470805641bedbc09"
+  },
+  {
+    "name": "kotlin-reflect-2.0.21.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-reflect/2.0.21/kotlin-reflect-2.0.21.jar",
+    "size": 3064567,
+    "sha256": "3ad2fcad0c09ddc0922debab4444d612144b7b465b75a8bb7587e20ddfafd799"
+  },
+  {
+    "name": "kotlinx-coroutines-core-jvm-1.6.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.6.4/kotlinx-coroutines-core-jvm-1.6.4.jar",
+    "size": 1476653,
+    "sha256": "c24c8bb27bb320c4a93871501a7e5e0c61607638907b197aef675513d4c820be"
+  },
+  {
+    "name": "trove4j-1.0.20200330.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/jetbrains/intellij/deps/trove4j/1.0.20200330/trove4j-1.0.20200330.jar",
+    "size": 572985,
+    "sha256": "c5fd725bffab51846bf3c77db1383c60aaaebfe1b7fe2f00d23fe1b7df0a439d"
+  },
+  {
+    "name": "annotations-24.0.1.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/jetbrains/annotations/24.0.1/annotations-24.0.1.jar",
+    "size": 30651,
+    "sha256": "61666dbce7e42e6c85b43c04fcfb8293a21dcb55b3c80e869270ce42c01a6b35"
+  },
+  {
+    "name": "json-20240303.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar",
+    "size": 78332,
+    "sha256": "3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed"
+  }
+]

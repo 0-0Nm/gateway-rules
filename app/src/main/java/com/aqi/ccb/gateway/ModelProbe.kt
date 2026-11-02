@@ -160,6 +160,7 @@ object ModelProbe {
      */
     private fun open(url: String, key: String, body: String, timeoutMs: Int): HttpURLConnection {
         val conn = URL(url).openConnection() as HttpURLConnection
+        conn.instanceFollowRedirects = false // Never forward provider credentials to redirects.
         conn.requestMethod = "POST"
         conn.doOutput = true
         conn.connectTimeout = timeoutMs

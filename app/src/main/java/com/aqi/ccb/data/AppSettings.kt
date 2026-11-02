@@ -44,10 +44,10 @@ object AppSettings {
      *
      * 默认值改为 true，与悬浮窗（默认 true）保持一致。
      * 之前默认 false 导致首次启动「悬浮窗开着、MCP 关着」的割裂状态。
-     * MCP 仅监听 127.0.0.1，只有本机可访问，默认开启风险可控。
+     * MCP 仅管理接口仅回环监听并要求独立令牌；新安装默认关闭，显式配置的旧开关保留。
      */
     fun mcpEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_MCP_ENABLED, true)
+        prefs(context).getBoolean(KEY_MCP_ENABLED, false)
 
     fun setMcpEnabled(context: Context, v: Boolean) =
         prefs(context).edit().putBoolean(KEY_MCP_ENABLED, v).apply()
@@ -55,14 +55,25 @@ object AppSettings {
     fun mcpPort(context: Context): Int =
         prefs(context).getInt(KEY_MCP_PORT, DEFAULT_MCP_PORT)
 
-    fun setMcpPort(context: Context, p: Int) =
+    fun setMcpPort(context: Context, p: Int) {
+        require(p in 1024..65535) { "port out of range" }
         prefs(context).edit().putInt(KEY_MCP_PORT, p).apply()
+    }
 
     fun gatewayPort(context: Context): Int =
         prefs(context).getInt(KEY_GATEWAY_PORT, DEFAULT_GATEWAY_PORT)
 
-    fun setGatewayPort(context: Context, p: Int) =
+    fun setGatewayPort(context: Context, p: Int) {
+        require(p in 1024..65535) { "port out of range" }
         prefs(context).edit().putInt(KEY_GATEWAY_PORT, p).apply()
+    }
+
+    fun gatewayLanEnabled(context: Context): Boolean =
+        prefs(context).getBoolean("gateway_lan_enabled", false)
+
+    fun setGatewayLanEnabled(context: Context, enabled: Boolean) {
+        check(prefs(context).edit().putBoolean("gateway_lan_enabled", enabled).commit())
+    }
 
     /** 界面提示弹窗（Toast/Snackbar）开关 */
     fun toastEnabled(context: Context): Boolean =

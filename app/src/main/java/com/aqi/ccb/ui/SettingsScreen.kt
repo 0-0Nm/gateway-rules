@@ -24,7 +24,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -43,6 +46,7 @@ import androidx.compose.ui.unit.dp
  */
 data class SettingsState(
     val gatewayPort: String = "38080",
+    val gatewayLanEnabled: Boolean = false,
     val floatEnabled: Boolean = true,
     val mcpEnabled: Boolean = false,
     val mcpPort: String = "38081",
@@ -94,6 +98,8 @@ data class SettingsState(
 fun SettingsScreen(
     state: SettingsState,
     onGatewayPort: (String) -> Unit,
+    onGatewayLanToggle: (Boolean) -> Unit,
+    onCopyGatewayToken: () -> Unit,
     onFloatToggle: (Boolean) -> Unit,
     onMcpToggle: (Boolean) -> Unit,
     onMcpPort: (String) -> Unit,
@@ -106,6 +112,16 @@ fun SettingsScreen(
     onOpenAutoStart: (() -> Unit)? = null,
     freezeProneRom: Boolean = false,
 ) {
+    var confirmLan by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    if (confirmLan) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmLan = false },
+            title = { Text("允许局域网访问网关？") },
+            text = { Text("会监听所有网卡。访问仍需网关令牌；HTTP 不加密，请仅用于可信网络。MCP 管理端口仍只监听本机。") },
+            confirmButton = { TextButton(onClick = { confirmLan = false; onGatewayLanToggle(true) }) { Text("确认开启") } },
+            dismissButton = { TextButton(onClick = { confirmLan = false }) { Text("取消") } },
+        )
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -127,6 +143,16 @@ fun SettingsScreen(
         ) {
             // ---------- 网关 ----------
             CardGroup(title = { Text("网关") }) {
+                switchItem(
+                    checked = state.gatewayLanEnabled,
+                    onCheckedChange = { if (it) confirmLan = true else onGatewayLanToggle(false) },
+                    headlineContent = { Text("允许局域网访问（默认关闭）") },
+                    supportingContent = { Text("始终需要访问令牌。切换会重启正在运行的网关；MCP 仅限本机。") },
+                )
+                formItem(headlineContent = { Text("网关访问凭据") }) {
+                    Text("客户端 API Key 使用本机生成的网关令牌，不是上游提供商密钥。")
+                    OutlinedButton(onClick = onCopyGatewayToken) { Text("复制网关令牌") }
+                }
                 formItem(headlineContent = { Text("监听端口") }) {
                     OutlinedTextField(
                         value = state.gatewayPort,
@@ -255,7 +281,7 @@ fun SettingsScreen(
                 formItem(
                     headlineContent = { Text("MCP 地址（点击复制）") },
                     supportingContent = {
-                        Text("客户端 Base URL 填这个；MCP 类型选 HTTP / Streamable HTTP")
+                        Text("仅本机可访问，必须携带 Authorization: Bearer 管理令牌。复制配置 JSON 可取得完整连接信息。")
                     },
                 ) {
                     val clipboard = LocalClipboardManager.current

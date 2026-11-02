@@ -137,6 +137,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Load persisted values after Context attachment, before the first composition.
+        settingsState = settingsState.copy(
+            gatewayPort = AppSettings.gatewayPort(this).toString(),
+            gatewayLanEnabled = AppSettings.gatewayLanEnabled(this),
+            floatEnabled = AppSettings.floatEnabled(this),
+            mcpEnabled = AppSettings.mcpEnabled(this),
+            mcpPort = AppSettings.mcpPort(this).toString(),
+            toastEnabled = AppSettings.toastEnabled(this),
+        )
+        mainState = mainState.copy(port = AppSettings.gatewayPort(this).toString())
         // 日志写到外部私有目录（/sdcard/Android/data/<pkg>/files/logs）：
         // 应用无需额外权限即可写，adb/shell 也能直接读，便于自助排查。
         // 取不到外部目录时回退到内部 filesDir。
@@ -303,7 +313,27 @@ class MainActivity : ComponentActivity() {
                             // 先更新 UI 状态（否则受控输入会回滚，表现为打不进字）
                             settingsState = settingsState.copy(gatewayPort = p)
                             mainState = mainState.copy(port = p)
-                            AppSettings.setGatewayPort(this, p.toIntOrNull() ?: 38080)
+                            p.toIntOrNull()?.takeIf { it in 1024..65535 }?.let {
+                                AppSettings.setGatewayPort(this, it)
+                            }
+                        },
+                        onGatewayLanToggle = { enabled ->
+                            AppSettings.setGatewayLanEnabled(this, enabled)
+                            settingsState = settingsState.copy(gatewayLanEnabled = enabled)
+                            if (GatewayService.running) {
+                                GatewayService.start(this, AppSettings.gatewayPort(this))
+                            }
+                        },
+                        onCopyGatewayToken = {
+                            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                            val clip = android.content.ClipData.newPlainText("Gateway access token",
+                                com.aqi.ccb.gateway.LocalAccessTokens.gateway(this))
+                            clip.description.extras = android.os.PersistableBundle().apply {
+                                putBoolean("android.content.extra.IS_SENSITIVE", true)
+                            }
+                            cm.setPrimaryClip(clip)
+                            com.aqi.ccb.ui.UiToast.show("网关访问令牌已复制，请仅交给可信客户端")
                         },
                         onFloatToggle = { v ->
                             settingsState = settingsState.copy(floatEnabled = v)
@@ -399,19 +429,20 @@ class MainActivity : ComponentActivity() {
                         },
                         onBack = { route = "main"; refreshMain() },
                         onMcpCopyRaw = {
-                            val cfg = """{
-  "mcpServers": {
-    "gateway-rules": {
-      "type": "http",
-      "url": "http://127.0.0.1:${settingsState.mcpPort}/mcp"
-    }
-  }
-}"""
+                            val actualPort = McpService.current?.port ?: AppSettings.mcpPort(this)
+                            val cfg = JSONObject().put("mcpServers", JSONObject().put("gateway-rules",
+                                JSONObject().put("type", "http")
+                                    .put("url", "http://127.0.0.1:$actualPort/mcp")
+                                    .put("headers", JSONObject().put("Authorization",
+                                        "Bearer " + com.aqi.ccb.gateway.LocalAccessTokens.mcp(this)))
+                            )).toString(2)
                             val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                                 as android.content.ClipboardManager
-                            cm.setPrimaryClip(
-                                android.content.ClipData.newPlainText("mcp", cfg)
-                            )
+                            val clip = android.content.ClipData.newPlainText("mcp", cfg)
+                            clip.description.extras = android.os.PersistableBundle().apply {
+                                putBoolean("android.content.extra.IS_SENSITIVE", true)
+                            }
+                            cm.setPrimaryClip(clip)
                             com.aqi.ccb.ui.UiToast.show("MCP 配置 JSON 已复制")
                         },
                     )
@@ -584,12 +615,15 @@ class MainActivity : ComponentActivity() {
 
     /** 回到前台时检查网关是否真在服务；被冻结过则重启 */
     private fun thawCheck() {
-        val port = mainState.port.toIntOrNull() ?: 38080
+        val active = GatewayService.current ?: return
+        if (!active.isRunning()) return
+        val port = active.port
         Thread {
             val alive = com.aqi.ccb.gateway.HttpUtil
-                .get("http://127.0.0.1:$port/health", timeoutMs = 1500)
+                .get("http://127.0.0.1:$port/health", timeoutMs = 1500,
+                    headers = mapOf("Authorization" to "Bearer " + com.aqi.ccb.gateway.LocalAccessTokens.gateway(this)))
                 .ok
-            if (!alive && AppSettings.gatewayPort(this) > 0) {
+            if (!alive && GatewayService.current === active && active.isRunning()) {
                 GateLog.warn("gw", "thaw: gateway unresponsive, restarting service")
                 ui.post {
                     GatewayService.start(this, port)
@@ -738,7 +772,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startGateway() {
         if (GatewayService.running) return
-        val port = mainState.port.toIntOrNull() ?: 38080
+        val port = AppSettings.gatewayPort(this)
         val providers = ProviderRepo.runtimeProviders(this)
         val rules = ProviderRepo.runtimeRules(this)
         if (providers.isEmpty() || rules.isEmpty()) {

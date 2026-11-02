@@ -18,8 +18,9 @@ push.py —— 带回读校验的 GitHub 推送
 """
 import io, json, base64, sys, urllib.request, urllib.error
 
-TOKEN = ("github_pat_11CSHKJQY05HZ6nWJKYuDw_Ltb56FnrFDIIq2KGTxiATW90Uur5xsx9jGWc1ew5"
-         "jFBLUIGEOF5Qd9N2Xyi")
+TOKEN = (__import__("os").environ.get("GITHUB_TOKEN") or __import__("os").environ.get("GH_TOKEN") or "")
+if not TOKEN:
+    raise RuntimeError("Publishing requires a rotated GITHUB_TOKEN or GH_TOKEN; no source-embedded credentials are accepted")
 REPO = "0-0Nm/gateway-rules"
 BRANCH = "main"
 
