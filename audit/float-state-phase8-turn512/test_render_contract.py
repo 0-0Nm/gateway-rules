@@ -37,4 +37,9 @@ class RenderContract(unittest.TestCase):
  def test_service_injects_refresh_without_starting_activity(self):
   s=(ROOT/'app/src/main/java/com/aqi/ccb/gateway/GatewayService.kt').read_text();self.assertIn('onVisualStateChanged = { FloatingBall.refreshFromProviders() }',s)
  def test_settings_color_legend_matches_four_states(self):self.assertIn('待命蓝/生成橙/完成绿/中断红',(ROOT/'app/src/main/java/com/aqi/ccb/ui/SettingsScreen.kt').read_text())
+ def test_label_color_and_expiry_share_one_snapshot(self):
+  b=body('renderFromProviders')
+  self.assertEqual(b.count('requestVisualStatePublic()'),1)
+  self.assertIn('val g = observed?.phase?.label ?: gatewayStateNow()',src)
+  self.assertIn('val delay = observed?.nextTransitionMs ?: 0L',src)
 if __name__=='__main__':unittest.main(verbosity=2)

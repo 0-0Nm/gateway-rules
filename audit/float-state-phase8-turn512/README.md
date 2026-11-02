@@ -44,7 +44,7 @@ python3 audit/float-state-phase8-turn512/test_render_contract.py
 python3 audit/float-state-phase8-turn512/verify_scope.py
 ```
 80项精确名称清单必须与实际PASS完全对应；包含虚拟时钟、24线程、1000步交错、模型scope、真实first回退、虚拟模型、SSE/tool-only/非流式、下游flush失败、实际配置update和大正文观察预算。该同一编译产物另外三轮各80/80，不算新增240项。
-12项渲染检查是源码契约（锁定不冻结、主线程、合并、解绑、到期、手势基线），不是实际Android View/Handler执行，更不是真机颜色视觉验收。
+13项渲染检查是源码契约（锁定不冻结、主线程、合并、解绑、到期、手势基线），不是实际Android View/Handler执行，更不是真机颜色视觉验收。
 六组原回归全部保留：安全51、配置48、生命周期43、语义77、原审查28、MCP57。原断言不删改；JVM适配器不冒充Android系统证据。
 所有测试只用隔离目录/127.0.0.1假上游；未调用真实提供商、未读取API凭据、未修改真实配置或手机安装。
 云端固定debug签名回归/DER证书检查保留，密钥、pin、release配置不改；Android完整编译必须以新run结果为准。
@@ -55,3 +55,5 @@ python3 audit/float-state-phase8-turn512/verify_scope.py
 签名固定版与手机当前旧临时key不同；本批不自动卸载、安装、启动服务或切前台。部署要先明确一次过渡方案再后台验收。
 baseline-source.tar.gz：73文件、383834字节，逐项SHA256核对。回滚先另备当前文件，按本批精确清单恢复并删本批新文件前确认无后续更改；禁止reset --hard/git clean。
 AB两库本批不更新；上一轮的“移植未实现”是当时历史记录，不重写成早已实现。后续实机证据达到条件再单独提炼。
+
+收口附加检查：renderFromProviders的文字、颜色和到期定时器只使用同一请求状态快照，避免第二次读取跨过到期边界而漏安排重绘。该风险来自源码时序审查，不声称已观察到真实设备故障；新增源码契约检查，现共13项。

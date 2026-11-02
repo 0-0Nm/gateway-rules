@@ -651,7 +651,10 @@ object FloatingBall {
     /** Main looper only. Keep window/gestures/MCP satellite independent of request observation. */
     private fun renderFromProviders() {
         val m = isMcpAliveNow()
-        val g = gatewayStateNow()
+        // One snapshot for label/color/expiry. Re-reading after rendering could cross the
+        // expiry and return delay0 while the already-drawn label still shows the old phase.
+        val observed = GatewayService.current?.takeIf { it.isRunning() }?.requestVisualStatePublic()
+        val g = observed?.phase?.label ?: gatewayStateNow()
         mcpAlive = m
         currentMcpLabel = if (m) MCP_ALIVE else MCP_DIED
         currentState = g
@@ -667,7 +670,7 @@ object FloatingBall {
         }
         main.removeCallbacks(visualExpiryRunnable)
         // A 30s watchdog cannot display a 3s success hold; schedule only the actual next transition.
-        val delay = GatewayService.current?.requestVisualStatePublic()?.nextTransitionMs ?: 0L
+        val delay = observed?.nextTransitionMs ?: 0L
         if (mainView != null && delay > 0) main.postDelayed(visualExpiryRunnable, delay.coerceAtLeast(1L))
     }
 
