@@ -172,6 +172,29 @@ class GatewayServer(
     }
 
     fun isRunning(): Boolean = running.get()
+    fun listeningPortPublic(): Int = serverSocket?.localPort ?: 0
+    fun debugSnapshot(): org.json.JSONObject {
+        val cfg=synchronized(this){live}
+        return org.json.JSONObject().put("running",isRunning()).put("boundPort",listeningPortPublic())
+            .put("bindHost",bindHost).put("configRevision",cfg.revision).put("requests",totalRequests)
+            .put("ok",totalOk).put("fail",totalFail).put("localRejects",localRejects).put("clientDisconnects",clientDisconnects)
+            .put("inflight",inflightPublic()).put("workers",workerCountPublic()).put("connections",tcpConnectionsPublic())
+            .put("uptimeSec",uptimeSecPublic()).put("providers",org.json.JSONArray(cfg.providers.map { p ->
+                org.json.JSONObject().put("id",p.id).put("enabled",p.enabled).put("errors",p.errors).put("breaker",p.breaker.name)
+                    .put("openUntilMs",p.openUntilMs).put("rate",org.json.JSONObject(limiter.peek(p.id)))
+            }))
+    }
+    /** Emits an id without trusting caller-supplied ids. Partial-write safety stays in RequestRun. */
+    private class RequestIdOutput(private val delegate: OutputStream, private val id: String): OutputStream() {
+        private val head=java.io.ByteArrayOutputStream(); private var inserted=false
+        override fun write(b:Int) {
+            if(inserted){delegate.write(b);return}
+            head.write(b);check(head.size()<=256){"Invalid HTTP status line"}
+            if(b==10){inserted=true;delegate.write(head.toByteArray());delegate.write("X-Gateway-Request-Id: $id\r\n".toByteArray(Charsets.US_ASCII));head.reset()}
+        }
+        override fun write(b:ByteArray,off:Int,len:Int){var used=0;while(!inserted && used<len){write(b[off+used].toInt() and 255);used++};if(used<len)delegate.write(b,off+used,len-used)}
+        override fun flush(){delegate.flush()}
+    }
 
     // ---- 供 UI 读取的公开诊断访问器（内部实现保持 private）----
     fun pathDiagnosisPublic(): String = pathDiagnosis()
@@ -197,7 +220,7 @@ class GatewayServer(
         try {
             socket.soTimeout = 30_000   // 客户端读请求头/体，30s 足够，避免长挂占线程
             val input = BufferedInputStream(socket.getInputStream())
-            val output = socket.getOutputStream()
+            val output = RequestIdOutput(socket.getOutputStream(),reqId)
 
             val head = readHeader(input) ?: return
             val request = SocketIo.parseRequestHead(head)
@@ -234,7 +257,7 @@ class GatewayServer(
                     handleModels(output, reqId)
                 }
                 method == "POST" && path == "/v1/chat/completions" -> {
-                    runChat(output, reqId, body, socket, input)
+                    runChat(output, reqId, body, socket, input, if(headers["x-gateway-max-attempts"]=="1")1 else Int.MAX_VALUE)
                 }
                 else -> {
                     fail(output, 404,
@@ -302,7 +325,7 @@ class GatewayServer(
     private class RequestCancelled : java.io.IOException("request_cancelled")
 
     /** One request owns its connection, commit boundary and terminal record. */
-    private class RequestRun(val reqId: String) {
+    private class RequestRun(val reqId: String, val attemptLimit: Int = Int.MAX_VALUE) {
         val started = System.nanoTime()
         val owner = Thread.currentThread()
         val upstream = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>()
@@ -366,8 +389,8 @@ class GatewayServer(
         runChat(output, reqId, body, null, null)
 
     private fun runChat(output: OutputStream, reqId: String, body: ByteArray,
-                        socket: Socket?, input: InputStream?) {
-        val run = RequestRun(reqId)
+                        socket: Socket?, input: InputStream?, attemptLimit: Int = Int.MAX_VALUE) {
+        val run = RequestRun(reqId, attemptLimit)
         activeRequests.add(run)
         val guarded = run.output(output)
         try {
@@ -463,8 +486,10 @@ class GatewayServer(
         var attempted = false
         var denied = false
         var lastError = "no_candidate"
+        var attemptCount=0
         for (c in ordered) {
             run.checkActive()
+            if(attemptCount>=run.attemptLimit)break
             val permit = synchronized(this) { limiter.acquire(c.p.id, rule.rateLimitOverride[c.p.id]) }
             if (!permit.ok) {
                 denied = true
@@ -479,6 +504,7 @@ class GatewayServer(
                 if (permit.waitMs > 0) Thread.sleep(kotlin.math.ceil(permit.waitMs).toLong())
                 run.checkActive()
                 attempted = true
+                attemptCount++
                 val conn = openUpstream(c, transformed, config.keys[c.p.apiKeyRef].orEmpty(), run)
                 code = conn.responseCode
                 run.checkActive()

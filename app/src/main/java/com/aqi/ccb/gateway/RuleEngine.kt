@@ -433,10 +433,12 @@ object RuleEngine {
     }
 
     /** Same evaluator as execution. Dry-run never advances round-robin or sticky bindings. */
-    fun explain(rule: RuleSpec, providers: List<Provider>, ctx: RequestCtx): Map<String, Any?> {
+    fun explain(rule: RuleSpec, providers: List<Provider>, ctx: RequestCtx): Map<String, Any?> =
+        explainCandidates(rule,buildCands(providers,ctx),ctx)
+    fun explainCandidates(rule: RuleSpec, candidates: List<Cand>, ctx: RequestCtx): Map<String, Any?> {
         val dry = ctx.copy(dryRun = true, ruleKey = rule.id)
         val trace = mutableListOf<Map<String, Any?>>()
-        val cur = try { evaluate(buildCands(providers, dry), dry, rule.select, trace) }
+        val cur = try { evaluate(candidates, dry, rule.select, trace) }
         catch (e: IllegalStateException) { return mapOf("error" to e.message) }
         catch (e: IllegalArgumentException) { return mapOf("error" to e.message) }
         val stochastic = rule.select.any { it.op in setOf("random", "weighted_rr") }

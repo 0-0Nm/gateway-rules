@@ -232,7 +232,7 @@ class McpServer(
         })
         put("serverInfo", JSONObject().apply {
             put("name", "gateway-rules-mcp")
-            put("version", "0.3.0")
+            put("version", "0.4.0")
         })
     }
 
@@ -442,6 +442,29 @@ class McpServer(
                 })
             }
         ))
+        fun debugSchema(properties: JSONObject, required: List<String> = emptyList()) = JSONObject().put("type","object")
+            .put("properties",properties).put("additionalProperties",false).put("required",JSONArray(required))
+        fun integer(min: Int,max: Int,default:Int) = JSONObject().put("type","integer").put("minimum",min).put("maximum",max).put("default",default)
+        val logFields=JSONObject().put("stream",str("system or calls; default system").put("enum",JSONArray(listOf("system","calls"))))
+            .put("limit",integer(1,200,50)).put("requestId",str("Exact X-Gateway-Request-Id, optional"))
+            .put("kind",str("request/attempt/rate_limit/result/diagnostic; calls only"))
+            .put("level",str("INFO/WARN/ERROR; system only")).put("contains",str("Case-insensitive substring AFTER redaction"))
+            .put("cursor",str("Opaque continuation from the previous matching query; omit for newest snapshot"))
+        arr.put(tool("gw_log_query","后台读取脱敏系统/调用日志；限1MiB扫描、200条、16文件，返回游标与截断信息；不返回认证头或原始正文。",debugSchema(logFields)))
+        arr.put(tool("gw_trace_request","按响应X-Gateway-Request-Id追踪request/attempt/result；有游标须继续读，未找到终态不代表成功。",debugSchema(JSONObject()
+            .put("requestId",str("r-xxxxxxxx response id")).put("limit",integer(1,200,50)).put("cursor",str("Opaque cursor")),listOf("requestId"))))
+        arr.put(tool("gw_debug_snapshot","后台快照：持久化与运行版本、进程内网关状态、连接、限流、熔断；不暴露密钥，不启动Activity。",debugSchema(JSONObject())))
+        arr.put(tool("gw_explain_route","后台只读选路解释，支持虚拟模型绑定规则；不发网络请求、不修改轮转状态；不代表实际限流准入。",debugSchema(JSONObject()
+            .put("modelId",str("Requested real or virtual model")) .put("sessionId",str("Optional routing session id"))
+            .put("requestId",str("Optional deterministic routing identity")).put("turnIndex",integer(0,1000000,0)),listOf("modelId"))))
+        arr.put(tool("gw_gateway_control","启动/停止网关服务，不切前台Activity、不停止MCP。必须confirm；LAN启动另需allowLan。accepted不等于completed，轮询快照核实。",debugSchema(JSONObject()
+            .put("action",str("start or stop").put("enum",JSONArray(listOf("start","stop"))))
+            .put("confirm",bool("Explicit permission to change gateway runtime")) .put("allowLan",bool("Explicit approval only when configured LAN binding is enabled")),listOf("action","confirm"))))
+        arr.put(tool("gw_self_test","后台隔离自检：真实临时网关和回环上游，认证/列表/JSON/SSE/失败/单次尝试；零外部请求，不改真实配置。一次仅一个诊断，结果声明未覆盖范围。",debugSchema(JSONObject())))
+        arr.put(tool("gw_probe_request","通过运行中的本机网关执行一次受限真实请求，可能计费；confirm必填，maxTokens1..64，超时1..15秒，不返回提示词/响应正文。返回requestId供追踪；禁止自动重试。",debugSchema(JSONObject()
+            .put("modelId",str("Configured model or virtual model")) .put("confirm",bool("Explicit consent to one potentially billable request"))
+            .put("stream",bool("Whether to exercise SSE; default false")) .put("maxTokens",integer(1,64,16))
+            .put("timeoutMs",integer(1000,15000,10000)) .put("prompt",str("Optional prompt up to512 chars; default Reply with OK.")),listOf("modelId","confirm"))))
         return JSONObject().apply { put("tools", arr) }
     }
 
@@ -500,6 +523,8 @@ class McpServer(
                 )
                 "gw_delete_virtual_model" -> cfg.deleteVirtualModel(args.optString("name"))
                 "gw_read_log" -> cfg.readLog(args.optInt("lines", 50))
+                "gw_log_query", "gw_trace_request", "gw_debug_snapshot", "gw_explain_route",
+                "gw_gateway_control", "gw_self_test", "gw_probe_request" -> cfg.debugTool(name,args.toString())
                 "gw_get_ui_style" -> cfg.getUiStyleJson()
                 "gw_set_ui_style" -> cfg.setUiStyle(args.toString())
                 else -> """{"error":"unknown tool: $name"}"""
@@ -614,6 +639,7 @@ interface McpConfig {
     fun listVirtualModelsJson(): String
     fun statusJson(gatewayPort: Int): String
     fun readLog(lines: Int): String
+    fun debugTool(name:String,argsJson:String):String = "{\"ok\":false,\"code\":\"DIAGNOSTICS_UNAVAILABLE\",\"error\":\"Bridge does not implement diagnostics\"}"
     /** 读取 UI 样式配置（圆角/透明度等） */
     fun getUiStyleJson(): String
     /** 按 JSON patch 修改 UI 样式，返回改后完整配置 */

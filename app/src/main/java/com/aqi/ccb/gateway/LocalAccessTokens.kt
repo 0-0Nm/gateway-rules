@@ -16,6 +16,10 @@ object LocalAccessTokens {
         check(prefs.edit().putString(role, value).commit()) { "Cannot persist local access token" }
         return value
     }
+    fun existingForRedaction(context: Context): List<String> {
+        val prefs=context.applicationContext.getSharedPreferences(PREFS,Context.MODE_PRIVATE)
+        return listOfNotNull(prefs.getString("mcp_control",null),prefs.getString("gateway_data",null))
+    }
     fun mcp(context: Context): String = get(context, "mcp_control")
     fun gateway(context: Context): String = get(context, "gateway_data")
 }

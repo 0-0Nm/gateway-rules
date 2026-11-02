@@ -109,6 +109,7 @@ class McpService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        GateLog.ensureInitialized(java.io.File(runCatching { getExternalFilesDir(null) }.getOrNull() ?: filesDir, "logs"))
         if (intent?.action == ACTION_STOP) {
             GateLog.info("mcp", "service stop requested")
             current?.stop()

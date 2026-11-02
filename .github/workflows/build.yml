@@ -43,6 +43,8 @@ jobs:
         run: python3 audit/semantics-phase4/run_semantics.py --fetch-deps --output build/semantics-audit
       - name: Original 28 audit counterexamples (assertions unchanged)
         run: AUDIT_KOTLIN_LIB="$HOME/.cache/gateway-security-deps" python3 audit/semantics-phase4/regression/run_tests.py --output build/original-audit
+      - name: Background MCP diagnostics regression
+        run: python3 audit/mcp-debug-phase5/run_debug.py --fetch-deps --output build/mcp-debug-audit
       - name: Assemble debug
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
@@ -57,4 +59,5 @@ jobs:
             build/lifecycle-audit/**
             build/semantics-audit/**
             build/original-audit/**
+            build/mcp-debug-audit/**
           if-no-files-found: warn
