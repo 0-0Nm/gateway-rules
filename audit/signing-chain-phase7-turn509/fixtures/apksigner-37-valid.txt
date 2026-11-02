@@ -1,0 +1,37 @@
+Verifies
+Verified using v1 scheme (JAR signing): false
+Verified using v2 scheme (APK Signature Scheme v2): true
+Verified using v3 scheme (APK Signature Scheme v3): false
+Verified using v3.1 scheme (APK Signature Scheme v3.1): false
+Verified using v3.2 scheme (APK Signature Scheme v3.2): false
+Verified using v4 scheme (APK Signature Scheme v4): false
+Verified for SourceStamp: false
+Number of signers: 1
+V2 Signer: certificate DN: CN=Android Debug, O=Android, C=US
+V2 Signer: certificate SHA-256 digest: d582b4c0e283445fd957df00818e30823011da6f15759ac1f0568617af2086ef
+V2 Signer: certificate SHA-1 digest: 7152790b90b32d45b640d6fa91ca558473dada2d
+V2 Signer: certificate MD5 digest: 057577ed7662c65829601937eaef9743
+V2 Signer: key algorithm: RSA
+V2 Signer: key size (bits): 2048
+V2 Signer: public key SHA-256 digest: 55a872f0960f805bb2ae95fe59b5604706cefe85796c8851d86e8b1e4f45b732
+V2 Signer: public key SHA-1 digest: bbd56adbe9f15a7b8214de4f80419f0e9cfb8f1e
+V2 Signer: public key MD5 digest: f9f3359271ef0e62c6fb05f36d34acc8
+-----BEGIN CERTIFICATE-----
+MIIDEzCCAfugAwIBAgIIX9qpk2XInZMwDQYJKoZIhvcNAQEMBQAwNzELMAkGA1UE
+BhMCVVMxEDAOBgNVBAoTB0FuZHJvaWQxFjAUBgNVBAMTDUFuZHJvaWQgRGVidWcw
+IBcNMjYxMTAyMDk0MDMzWhgPMjA1NDAzMjAwOTQwMzNaMDcxCzAJBgNVBAYTAlVT
+MRAwDgYDVQQKEwdBbmRyb2lkMRYwFAYDVQQDEw1BbmRyb2lkIERlYnVnMIIBIjAN
+BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArOdzlDb300WPCkI7roUM7KilY5T3
+k0uQ+TRAGEBkKrEMJakAzHLAXeISTBGufGwSM9yd6VAYLMCY+dQTCTs4wpkkgG+g
+p21WiVyK+p90n/2MgpjrZC6DuWW0CefDtlPe01mMMynsaVjqhjcD/uLyy02nCJoI
+So2FC7Q776KWRcB0QxEAwq9J4WdxSJjX9/dQbxfdJaohGwODLoEtmVLO5UEpATsw
+M/sCZZXlKXjcuCR58QyHhLb9tL8Y/PWKcxgqrMalOW5npLYxWXHtUaWe5eHbOVyz
+BnaCm/KJSC/A3s3LRKfBtYj2eliELtuXh8MTNF2h4hJwJVHrm0aXtMcpaQIDAQAB
+oyEwHzAdBgNVHQ4EFgQUuBcsP8o4q7yMfwzJVE0aq3XZdVwwDQYJKoZIhvcNAQEM
+BQADggEBAF9uVefrKQ7CEc5QRphWSKNAytn6njHyIJ3lUrFfWEu6sD70Pg1Jqb5B
+agPsPABbdfQ4+JBA7auJ7FU5HvTqRrxCRpso89jmZIGu2mROo7mnOPZdX07FRV/k
+1GhslDWxijFY8j8QhfuKzNJ+tjtbcaOfW8taongO6Ksa4qbsrhgwxucuO4n99wZ6
+/i5uG9oOrSpkDDFPESe+DXTBUnI+17jFUxrMBIpfRK6r6BlZydCsAohIYvtjKeN6
+SL/68JaSGWsnB8X8fFhQSMKQt3xoYWtonMJIv9+RSamOUc6ih/qFSpO2kRm3g4E7
+rM7Jo2TT4yW33WRIaUkDOMngrEZnvOg=
+-----END CERTIFICATE-----

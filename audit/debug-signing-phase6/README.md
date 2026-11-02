@@ -44,3 +44,6 @@ GitHub Secret与源码是两个操作域：回滚代码不代表已删除Secret�
 ## 首次云端反例及修正
 运行41423569056的20项之前版本18项测试、密钥恢复、六组业务测试及整包编译都通过，但最终APK证书与固定指纹不一致，门禁真实拒绝。没有放宽指纹或把旧证书当正确。
 修正：不再依赖AGP默认HOME位置；恢复和Gradle debug签名配置显式使用相同RUNNER_TEMP文件，新增2项路径接线回归，输出签名报告。正式release配置不变。需以后续新运行实测结果为准。
+
+## Turn509 全链复盘更正
+48a32098最终APK实际证书已用官方SDK36/37验证均是正确d582…，不是Gradle签错。最终误报由旧脚本只识别Signer #编号、CI自动选SDK37输出V2 Signer引起，且混淆解析失败与真pin不符。当前改用PEM证书DER计算身份、固定CI工具版本并补真实输出及真实APK交叉回归；原pin和Secret不变。详情见audit/signing-chain-phase7-turn509/README.md。

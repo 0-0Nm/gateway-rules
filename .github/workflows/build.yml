@@ -21,6 +21,8 @@ jobs:
           java-version: '17'
       - name: Debug signing regression
         run: python3 audit/debug-signing-phase6/test_debug_signing.py
+      - name: Signature output and toolchain compatibility regression
+        run: python3 audit/signing-chain-phase7-turn509/test_signature_parser.py
       - name: Restore fixed development debug key
         env:
           GATEWAY_DEBUG_KEYSTORE_B64: ${{ secrets.GATEWAY_DEBUG_KEYSTORE_B64 }}
@@ -54,7 +56,7 @@ jobs:
       - name: Assemble debug
         run: gradle :app:signingReport assembleDebug --no-daemon --stacktrace -PgatewayDebugKeystore="$RUNNER_TEMP/gateway-debug.keystore"
       - name: Verify fixed debug APK certificate
-        run: python3 tools/debug_signing.py verify --apk app/build/outputs/apk/debug/app-debug.apk --sdk "$ANDROID_HOME" --output build/debug-signing-audit/results.json
+        run: python3 tools/debug_signing.py verify --apk app/build/outputs/apk/debug/app-debug.apk --sdk "$ANDROID_HOME" --build-tools-version 36.0.0 --output build/debug-signing-audit/results.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
