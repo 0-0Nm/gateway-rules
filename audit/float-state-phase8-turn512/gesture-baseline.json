@@ -1,0 +1,10 @@
+{
+  "sourceCommit": "5af1b457e95499861c508923ac147408efe42e2d",
+  "makeTouchListenerCleanBodySha256": "c8f542772190b94ec38197d5b567d8b30b802b2e2c8ad768b0de5f661f5e2ef1",
+  "gestureConstants": {
+    "DRAG_HOLD_MS": "400L",
+    "UNLOCK_HOLD_MS": "2000L",
+    "DRAG_SLOP_PX": "12f"
+  },
+  "scope": "source regression pin, not touch event execution"
+}

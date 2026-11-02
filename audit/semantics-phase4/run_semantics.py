@@ -27,7 +27,7 @@ else:
        ROOT/'audit/20261102/deps']
  jars=[p for d in dirs for p in d.glob('*.jar')]
 cp=os.pathsep.join(map(str,jars));g=ROOT/'app/src/main/java/com/aqi/ccb/gateway'
-names=['ConfigStore','ConfigValidation','ConfigCommands','VirtualModelStore','GatewayRuntime','HttpUtil','BaseUrlProbe','BatchTester','ModelProbe','Contracts','RateLimit','RuleEngine','SafeExpr','SocketIo','SwitchPolicy','GateLog','JsonUtil','GatewayServer','McpServer','VirtualModel','RequestTransform','ServerAccessPolicy','LocalAccessTokens']
+names=['ConfigStore','ConfigValidation','ConfigCommands','VirtualModelStore','GatewayRuntime','HttpUtil','BaseUrlProbe','BatchTester','ModelProbe','Contracts','RequestVisualState','RateLimit','RuleEngine','SafeExpr','SocketIo','SwitchPolicy','GateLog','JsonUtil','GatewayServer','McpServer','VirtualModel','RequestTransform','ServerAccessPolicy','LocalAccessTokens']
 sources=[g/(n+'.kt') for n in names]+[ROOT/'audit/config-phase2/BridgeContext.kt',ROOT/'audit/security-phase1/AuditPlatformStubs.kt',HERE/'SemanticsAudit.kt',ROOT/'audit/config-phase2/BridgePlatform.kt',ROOT/'audit/config-phase2/UiStyleAdapter.kt']+[g.parent/'data'/n for n in ['ModelInfo.kt','ProviderDraft.kt','ProviderRepo.kt','VirtualModelDraft.kt','VirtualModelRepo.kt','AppSettings.kt']]
 summary={'languageVersion':'1.9','apiVersion':'1.9','scope':'Production source semantic regression, isolated configuration and loopback; Android build and UI acceptance separate',
  'sources':{str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}}

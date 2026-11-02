@@ -167,7 +167,8 @@ class GatewayService : Service() {
         val limiter = RateLimiter(policies, RatePolicy())
 
         val srv = GatewayServer(port, providers, rules, limiter,
-            LocalAccessTokens.gateway(this), vmodels, bindHost)
+            LocalAccessTokens.gateway(this), vmodels, bindHost,
+            onVisualStateChanged = { FloatingBall.refreshFromProviders() })
         // 优先用 Activity 预设值，其次用本服务缓存
         srv.logDirPath = if (pendingLogDir.isNotEmpty()) pendingLogDir else lastLogDir
         srv.configDirPath = filesDir.absolutePath

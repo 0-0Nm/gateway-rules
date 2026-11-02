@@ -28,7 +28,8 @@ class GatewayServer(
     private val localAuth: String,
     virtualModels: List<VirtualModel> = emptyList(),
     private val bindHost: String = "127.0.0.1",
-    private val upstreamReadTimeoutMs: Int = 90_000
+    private val upstreamReadTimeoutMs: Int = 90_000,
+    private val onVisualStateChanged: () -> Unit = {},
 ) {
     init { require(upstreamReadTimeoutMs in 1..90_000)
         require(bindHost in setOf("127.0.0.1", "0.0.0.0")) { "Unsupported bind address" } }
@@ -42,6 +43,7 @@ class GatewayServer(
     private val accessPolicy = ServerAccessPolicy(localAuth, loopbackOnly = bindHost == "127.0.0.1")
     private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
     private val activeRequests = java.util.concurrent.ConcurrentHashMap.newKeySet<RequestRun>()
+    private val requestVisual = RequestVisualState(onChanged = onVisualStateChanged)
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
@@ -161,6 +163,7 @@ class GatewayServer(
 
     fun stop() {
         running.set(false)
+        requestVisual.reset()
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
         acceptThread = null
@@ -173,12 +176,14 @@ class GatewayServer(
 
     fun isRunning(): Boolean = running.get()
     fun listeningPortPublic(): Int = serverSocket?.localPort ?: 0
+    fun requestVisualStatePublic(): RequestVisualState.Snapshot = requestVisual.snapshot()
     fun debugSnapshot(): org.json.JSONObject {
         val cfg=synchronized(this){live}
         return org.json.JSONObject().put("running",isRunning()).put("boundPort",listeningPortPublic())
             .put("bindHost",bindHost).put("configRevision",cfg.revision).put("requests",totalRequests)
             .put("ok",totalOk).put("fail",totalFail).put("localRejects",localRejects).put("clientDisconnects",clientDisconnects)
             .put("inflight",inflightPublic()).put("workers",workerCountPublic()).put("connections",tcpConnectionsPublic())
+            .put("visualState",org.json.JSONObject(requestVisualStatePublic().asMap()))
             .put("uptimeSec",uptimeSecPublic()).put("providers",org.json.JSONArray(cfg.providers.map { p ->
                 org.json.JSONObject().put("id",p.id).put("enabled",p.enabled).put("errors",p.errors).put("breaker",p.breaker.name)
                     .put("openUntilMs",p.openUntilMs).put("rate",org.json.JSONObject(limiter.peek(p.id)))
@@ -202,7 +207,7 @@ class GatewayServer(
     fun acceptAlivePublic(): Boolean = acceptThread?.isAlive == true
     fun tcpConnectionsPublic(): Int = tcpConnections.get()
     fun workerCountPublic(): Int = pool.activeCount
-    /** 处理中请求数（供悬浮球判断「生成中」） */
+    /** 处理中的TCP请求；包含探活，不用它决定生成灯颜色。 */
     fun inflightPublic(): Int = inflight.get()
     fun queuedCountPublic(): Int = pool.queue?.size ?: 0
     fun uptimeSecPublic(): Long =
@@ -338,6 +343,7 @@ class GatewayServer(
         var outcome = "upstream_failure"
         var reason = "unexpected_failure"
         var success = false
+        var visualTicket: RequestVisualState.Ticket? = null
         fun elapsed() = (System.nanoTime() - started) / 1_000_000.0
         fun checkActive() {
             if (cancelled || Thread.currentThread().isInterrupted) throw RequestCancelled()
@@ -428,6 +434,12 @@ class GatewayServer(
         } finally {
             run.complete()
             activeRequests.remove(run)
+            requestVisual.finish(run.visualTicket, when (run.outcome) {
+                "success" -> RequestVisualState.Outcome.SUCCESS
+                "cancelled" -> RequestVisualState.Outcome.CANCELLED
+                "local_reject" -> RequestVisualState.Outcome.LOCAL_REJECT
+                else -> RequestVisualState.Outcome.FAILURE
+            })
             synchronized(this) {
                 when (run.outcome) {
                     "success" -> totalOk++
@@ -483,6 +495,7 @@ class GatewayServer(
         val ordered = SwitchPolicy.reorder(cands, rule.switchGranularity, ctx.sessionId, ctx.turnIndex)
         val transformed = if (vm != null && vm.transforms.isNotEmpty()) RequestTransform.apply(vm.transforms, body)
             else TransformedRequest(body, emptyMap(), emptySet(), emptyList())
+        run.visualTicket = requestVisual.begin(run.reqId, modelId)
         var attempted = false
         var denied = false
         var lastError = "no_candidate"
@@ -509,7 +522,9 @@ class GatewayServer(
                 code = conn.responseCode
                 run.checkActive()
                 if (code in 200..299) {
-                    relay(output, conn, stream)
+                    relayObserved(output, conn, stream,
+                        progress = { requestVisual.progress(run.visualTicket) },
+                        evidenceLimited = { requestVisual.evidenceUnavailable(run.visualTicket) })
                     run.markSuccess()
                     val latency = (System.nanoTime() - at) / 1_000_000.0
                     synchronized(c.p) {
@@ -588,8 +603,13 @@ class GatewayServer(
         }
     }
 
-    /** Byte-preserving relay. Successful headers are not successful completion. */
-    private fun relay(output: OutputStream, conn: HttpURLConnection, stream: Boolean) {
+    /** Existing three-argument entry retained for authoritative original regression fixtures. */
+    private fun relay(output: OutputStream, conn: HttpURLConnection, stream: Boolean) =
+        relayObserved(output, conn, stream, {}, {})
+
+    /** Byte-preserving transport: visual evidence is committed ONLY after downstream write+flush. */
+    private fun relayObserved(output: OutputStream, conn: HttpURLConnection, stream: Boolean,
+                              progress: () -> Unit, evidenceLimited: () -> Unit) {
         val code = conn.responseCode
         val isSse = conn.contentType.orEmpty().substringBefore(';').trim().equals("text/event-stream", true)
         if (stream && !isSse) throw java.io.IOException("Expected SSE response")
@@ -599,7 +619,11 @@ class GatewayServer(
                 (if (isSse) "text/event-stream" else "application/json") +
                 "\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n").toByteArray(Charsets.US_ASCII))
             output.flush()
-            val tracker = if (isSse) SocketIo.SseCompletion() else null
+            var pendingProgress = false
+            val tracker = if (isSse) SocketIo.SseCompletion { event ->
+                if (GenerationProgress.event(event, true)) pendingProgress = true
+            } else null
+            var proof = if (!isSse) java.io.ByteArrayOutputStream() else null
             val buf = ByteArray(4096)
             var count = 0L
             while (true) {
@@ -608,10 +632,16 @@ class GatewayServer(
                 if (n == 0) continue
                 tracker?.accept(buf, n)
                 output.write(buf, 0, n); output.flush()
+                if (pendingProgress) { progress(); pendingProgress = false }
+                proof?.let { body ->
+                    if (body.size().toLong() + n <= GenerationProgress.MAX_NON_STREAM_BYTES) body.write(buf, 0, n)
+                    else { proof = null; evidenceLimited() }
+                }
                 count += n
             }
             if (expected != null && count != expected) throw java.io.EOFException("Truncated upstream body")
             tracker?.requireComplete()
+            proof?.let { if (GenerationProgress.response(it.toByteArray())) progress() }
         }
     }
 

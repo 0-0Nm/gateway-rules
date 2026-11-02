@@ -27,7 +27,7 @@ else:
        ROOT/'audit/20261102/deps']
  jars=[p for d in dirs for p in d.glob('*.jar')]
 cp=os.pathsep.join(map(str,jars));g=ROOT/'app/src/main/java/com/aqi/ccb/gateway'
-names=['Contracts','RateLimit','RuleEngine','SafeExpr','SocketIo','SwitchPolicy','GateLog','JsonUtil','GatewayServer','McpServer','VirtualModel','RequestTransform','ServerAccessPolicy','LocalAccessTokens','HttpUtil']
+names=['Contracts','RequestVisualState','RateLimit','RuleEngine','SafeExpr','SocketIo','SwitchPolicy','GateLog','JsonUtil','GatewayServer','McpServer','VirtualModel','RequestTransform','ServerAccessPolicy','LocalAccessTokens','HttpUtil']
 sources=[g/(n+'.kt') for n in names]+[ROOT/'audit/security-phase1/TokenContext.kt',ROOT/'audit/security-phase1/AuditPlatformStubs.kt',HERE/'LifecycleAudit.kt']
 summary={'languageVersion':'1.9','apiVersion':'1.9','scope':'JVM lifecycle production-source regression, loopback sockets; Android network stack/device acceptance separate',
  'sources':{str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}}

@@ -41,10 +41,14 @@ object FloatingBall {
     private var appContext: Context? = null
 
     private val main = Handler(Looper.getMainLooper())
+    private val refreshQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val providerRefreshRunnable = Runnable { refreshQueued.set(false); renderFromProviders() }
+    private val visualExpiryRunnable = Runnable { refreshFromProviders() }
 
     const val STATE_IDLE = "待命"
     const val STATE_RUNNING = "生成"
     const val STATE_ERROR = "中断"
+    const val STATE_SUCCESS = "完成"
 
     /** MCP 状态文案（GREED 指定） */
     const val MCP_ALIVE = "MA"
@@ -93,6 +97,7 @@ object FloatingBall {
         mcpAliveProvider = mcpAlive
         gatewayStateProvider = gatewayState
         GateLog.info("float", "state providers bound")
+        refreshFromProviders()
     }
 
     /** 实时读取 MCP 存活；无 provider 时才退回缓存值 */
@@ -205,6 +210,7 @@ object FloatingBall {
             lastAttachError = null
             app.getSharedPreferences(PREF, Context.MODE_PRIVATE)
                 .edit().putBoolean(KEY_ATTACHED_ONCE, true).apply()
+            refreshFromProviders() // attach during a hold must schedule its real expiration, too
             return true
         } catch (e: Exception) {
             // 常见原因：appops 为 ignore（权限声明 granted 但实际被拒）
@@ -391,18 +397,16 @@ object FloatingBall {
         satView?.let { applyBorder(it); it.text = mcpLabel() }
         vibrate(30)
         GateLog.info("float", "locked (borderless); hold 2s to unlock")
+        refreshFromProviders()
     }
 
     private fun performUnlock() {
         locked = false
         appContext?.getSharedPreferences(PREF, Context.MODE_PRIVATE)
             ?.edit()?.putBoolean(KEY_LOCKED, false)?.apply()
-        mainView?.let {
-            applyBorder(it); it.text = label(); it.setTextColor(colorFor(currentState))
-        }
-        satView?.let {
-            applyBorder(it); it.text = mcpLabel(); it.setTextColor(mcpColor())
-        }
+        mainView?.let { applyBorder(it) }
+        satView?.let { applyBorder(it) }
+        refreshFromProviders()
         vibrate(60)
         GateLog.info("float", "unlocked by 2s hold")
     }
@@ -431,6 +435,9 @@ object FloatingBall {
     fun isLocked(): Boolean = locked
 
     fun detach() {
+        main.removeCallbacks(providerRefreshRunnable)
+        main.removeCallbacks(visualExpiryRunnable)
+        refreshQueued.set(false)
         // removeView 失败会造成「孤儿窗口」：代码里引用清了、球还在屏幕上，
         // 下次 attach 又会新建一对 -> 屏幕上出现重复球。
         // 原来完全静默，现在至少留一条日志。
@@ -610,15 +617,10 @@ object FloatingBall {
         }
     }
 
-    /** 网关状态：待命 / 生成中 / 中断 */
+    /** 网关状态：待命 / 生成 / 完成 / 中断；显示提供者仍是唯一真值。 */
     fun setState(state: String) {
-        if (state == currentState) return
-        currentState = state
-        main.post {
-            val v = mainView ?: return@post
-            v.text = label()
-            if (!locked) v.setTextColor(colorFor(state))
-        }
+        currentState = state // fallback only when no real provider is bound
+        refreshFromProviders() // the same observed value determines BOTH label and color
     }
 
     fun currentState(): String = currentState
@@ -631,11 +633,7 @@ object FloatingBall {
         if (alive == mcpAlive && currentMcpLabel == mcpLabel()) return
         mcpAlive = alive
         currentMcpLabel = mcpLabel()
-        main.post {
-            val v = satView ?: return@post
-            v.text = currentMcpLabel
-            if (!locked) v.setTextColor(mcpColor())
-        }
+        refreshFromProviders()
     }
 
     fun isMcpAlive(): Boolean = isMcpAliveNow()
@@ -646,21 +644,31 @@ object FloatingBall {
      * 这样即使某次推送丢失，也会在一个周期内自愈。
      */
     fun refreshFromProviders() {
-        main.post {
-            val m = isMcpAliveNow()
-            val g = gatewayStateNow()
-            mcpAlive = m
-            currentMcpLabel = if (m) MCP_ALIVE else MCP_DIED
-            currentState = g
-            satView?.let { v ->
-                v.text = currentMcpLabel
-                if (!locked) v.setTextColor(mcpColor())
-            }
-            mainView?.let { v ->
-                v.text = label()
-                if (!locked) v.setTextColor(colorFor(g))
-            }
+        // At most one queued provider refresh; token-level events cannot flood the main looper.
+        if (refreshQueued.compareAndSet(false, true)) main.post(providerRefreshRunnable)
+    }
+
+    /** Main looper only. Keep window/gestures/MCP satellite independent of request observation. */
+    private fun renderFromProviders() {
+        val m = isMcpAliveNow()
+        val g = gatewayStateNow()
+        mcpAlive = m
+        currentMcpLabel = if (m) MCP_ALIVE else MCP_DIED
+        currentState = g
+        satView?.let { v ->
+            if (v.text.toString() != currentMcpLabel) v.text = currentMcpLabel
+            if (v.currentTextColor != mcpColor()) v.setTextColor(mcpColor())
         }
+        mainView?.let { v ->
+            val text = "● $g"
+            if (v.text.toString() != text) v.text = text
+            val color = colorFor(g)
+            if (v.currentTextColor != color) v.setTextColor(color)
+        }
+        main.removeCallbacks(visualExpiryRunnable)
+        // A 30s watchdog cannot display a 3s success hold; schedule only the actual next transition.
+        val delay = GatewayService.current?.requestVisualStatePublic()?.nextTransitionMs ?: 0L
+        if (mainView != null && delay > 0) main.postDelayed(visualExpiryRunnable, delay.coerceAtLeast(1L))
     }
 
     private fun label(): String = "● " + gatewayStateNow()
@@ -676,9 +684,10 @@ object FloatingBall {
     }
 
     private fun colorFor(state: String): Int = when (state) {
-        STATE_RUNNING -> 0xFF2196F3.toInt()
-        STATE_ERROR -> 0xFFF44336.toInt()
-        else -> 0xFF888888.toInt()
+        STATE_RUNNING -> RequestVisualState.Phase.BUSY.argb
+        STATE_ERROR -> RequestVisualState.Phase.ERROR.argb
+        STATE_SUCCESS -> RequestVisualState.Phase.SUCCESS.argb
+        else -> RequestVisualState.Phase.IDLE.argb
     }
 
     private fun mcpColor(): Int =
@@ -700,30 +709,16 @@ object FloatingBallState {
     /** MCP 是否存活：看真实 server 实例，不看静态 running 标志 */
     fun mcpAlive(): Boolean = McpService.current?.isRunning() == true
 
-    /** 失败窗口：60 秒 */
-    private const val FAIL_WINDOW_MS = 60_000L
-    /** 窗口内失败达到这个次数就判为「中断」，与熔断阈值一致 */
-    private const val FAIL_THRESHOLD = 3
-
-    /**
-     * 网关状态：
-     *   未运行                    -> 待命
-     *   60s 内失败 >= 3 次        -> 中断（真实数据驱动）
-     *   运行且有处理中请求        -> 生成
-     *   运行但空闲                -> 待命
-     *
-     * 「中断」不再是死状态：由 GatewayServer 的失败时间戳窗口驱动，
-     * 60 秒自然衰减，不会卡住不恢复。
-     * 优先级：中断 > 生成 > 待命 —— 连续失败比「正在跑」更需要被看见。
-     */
+    /** Logical generation state, not TCP connection count, health checks or provider attempts. */
     fun gatewayState(): String {
         val gw = GatewayService.current ?: return FloatingBall.STATE_IDLE
         if (!gw.isRunning()) return FloatingBall.STATE_IDLE
-        if (gw.recentFailureCountPublic(FAIL_WINDOW_MS) >= FAIL_THRESHOLD) {
-            return FloatingBall.STATE_ERROR
+        return when (gw.requestVisualStatePublic().phase) {
+            RequestVisualState.Phase.IDLE -> FloatingBall.STATE_IDLE
+            RequestVisualState.Phase.BUSY -> FloatingBall.STATE_RUNNING
+            RequestVisualState.Phase.SUCCESS -> FloatingBall.STATE_SUCCESS
+            RequestVisualState.Phase.ERROR -> FloatingBall.STATE_ERROR
         }
-        return if (gw.inflightPublic() > 0) FloatingBall.STATE_RUNNING
-        else FloatingBall.STATE_IDLE
     }
 
     /** 给 Activity / Service 共用的一键绑定 */

@@ -13,7 +13,7 @@ compiler=Path(os.environ.get('AUDIT_KOTLIN_LIB','/root/toolbox/workspace/gw-rule
 support=Path(os.environ.get('AUDIT_SUPPORT_LIB','/storage/emulated/0/Download/GatewayRules-audit-20261102/toolchain'))
 cp=':'.join(str(p) for base in [compiler,support,ROOT/'audit/20261102/deps'] for p in sorted(base.glob('*.jar')))
 g=ROOT/'app/src/main/java/com/aqi/ccb/gateway';d=g.parent/'data'
-core=['Contracts','RateLimit','RuleEngine','SafeExpr','SocketIo','SwitchPolicy','GateLog','JsonUtil']
+core=['Contracts','RequestVisualState','RateLimit','RuleEngine','SafeExpr','SocketIo','SwitchPolicy','GateLog','JsonUtil']
 more=['GatewayServer','McpServer','VirtualModel','RequestTransform','ConfigStore','VirtualModelStore','ConfigValidation','ConfigCommands','ServerAccessPolicy']
 summary={'scope':'phase4 production source; original audit assertions byte-identical; explicit constructor tokens inherited; JVM subset',
  'baselineRemote':'ab79dfc208ac01b206f2f081b2c4359caecf9ee3',

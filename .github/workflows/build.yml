@@ -53,6 +53,10 @@ jobs:
         run: AUDIT_KOTLIN_LIB="$HOME/.cache/gateway-security-deps" python3 audit/semantics-phase4/regression/run_tests.py --output build/original-audit
       - name: Background MCP diagnostics regression
         run: python3 audit/mcp-debug-phase5/run_debug.py --fetch-deps --output build/mcp-debug-audit
+      - name: Floating window source lifecycle contract (not device UI test)
+        run: python3 audit/float-state-phase8-turn512/test_render_contract.py
+      - name: Multi-upstream logical request colors regression
+        run: python3 audit/float-state-phase8-turn512/run_visual.py --fetch-deps --output build/visual-state-audit
       - name: Assemble debug
         run: gradle :app:signingReport assembleDebug --no-daemon --stacktrace -PgatewayDebugKeystore="$RUNNER_TEMP/gateway-debug.keystore"
       - name: Verify fixed debug APK certificate
@@ -71,4 +75,5 @@ jobs:
             build/original-audit/**
             build/mcp-debug-audit/**
             build/debug-signing-audit/**
+            build/visual-state-audit/**
           if-no-files-found: warn
