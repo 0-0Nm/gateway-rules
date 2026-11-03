@@ -42,7 +42,7 @@ python3 audit/app-foundation-phase9-turn514/test_app_contract.py
 python3 audit/app-foundation-phase9-turn514/run_foundation.py --fetch-deps --output build/app-foundation-audit
 python3 audit/app-foundation-phase9-turn514/verify_scope.py
 ```
-新增：版本32项（身份与Manifest/资产比较其中有模拟aapt输出的边界单测）、共享流程41项（真实本机HTTP/MCP+隔离配置+任务所有权）、17项源码接线检查。41项另重复3轮，不算新增123项。
+新增：版本32项（身份与Manifest/资产比较其中有模拟aapt输出的边界单测）、共享流程41项（真实本机HTTP/MCP+隔离配置+任务所有权）、19项源码接线检查（原17项保留，追加版本信息CardGroup DSL正反例2项）。41项另重复3轮，不算新增123项。
 保留旧七组：安全51、配置48、生命周期43、语义77、原审查28、MCP57、四色80。保留窗口源码13及固定debug签名20+22。测试适配器BuildConfigFixture不是实际APK元数据证明；最终必须做真实Android编译与Manifest/资产验收。
 既有请求/签名测试不因入口重构而删改，生产传输、配置格式与视觉状态文件基线哈希独立比较。
 本地长命令曾超时，后续先查活动子进程与结果文件再续跑，保留超时证据；已刷新结果才视为源码绑定通过。
@@ -54,3 +54,6 @@ python3 audit/app-foundation-phase9-turn514/verify_scope.py
 源码回滚前另存现有更改，按baseline-sha256.json精确恢复并审查本批新文件，不reset --hard、不git clean。
 版本计数器和未来run_number不得回收；回退源码也不复用已发布构建身份。任何后续改workflow路径/版本纪元都需审查。
 本批没有修改AB两库，也没有恢复旧API密钥。日志RSA锚缺签发能力仍未过，不混同业务/构建/签名门。
+
+## 实际Android编译修正（Turn546）
+首轮发布1e85e9c5、运行41633080878在SettingsScreen版本分组三处Text调用失败：CardGroup的content是非Composable构建DSL，必须使用item的Composable槽位。保留原三行信息，改为三个item，补正反例；旧源码检查通过不等于Compose编译通过。失败构建序号251不回收，修正使用新提交与新运行。

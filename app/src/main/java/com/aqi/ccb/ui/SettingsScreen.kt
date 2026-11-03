@@ -510,9 +510,9 @@ fun SettingsScreen(
 
             CardGroup(title = { Text("版本与构建") }) {
                 val build = com.aqi.ccb.data.BuildInfo
-                Text("应用版本：${build.versionName}（${build.versionCode}）")
-                Text("源码：${build.sourceCommit.take(12)} · 构建：${build.sequence}")
-                Text("渠道：${build.kind}；MCP协议/配置版本与应用版本独立")
+                item(headlineContent = { Text("应用版本：${build.versionName}（${build.versionCode}）") })
+                item(headlineContent = { Text("源码：${build.sourceCommit.take(12)} · 构建：${build.sequence}") })
+                item(headlineContent = { Text("渠道：${build.kind}；MCP协议/配置版本与应用版本独立") })
             }
 
             // ---------- 界面 ----------

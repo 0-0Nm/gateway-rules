@@ -14,6 +14,11 @@ def body(name):
    depth-=1
    if depth==0:return CLEAN[start+1:i]
  raise AssertionError('unbalanced')
+def build_identity_rows_use_slots(source):
+ anchor='CardGroup(title = { Text("版本与构建") }) {'
+ if source.count(anchor)!=1:return False
+ group=source.split(anchor,1)[1].split("// ---------- 界面 ----------",1)[0]
+ return len(re.findall(r"item\(\s*headlineContent\s*=\s*\{\s*Text\(",group))==3 and re.search(r"(?m)^\s*Text\(",group) is None
 class AppContract(unittest.TestCase):
  def test_settings_no_longer_contains_MCP_or_diagnostic_implementation(self):
   text=(ROOT/'app/src/main/java/com/aqi/ccb/data/AppSettings.kt').read_text();self.assertNotIn('class McpBridge',text);self.assertNotIn('object BackgroundDebug',text)
@@ -52,4 +57,13 @@ class AppContract(unittest.TestCase):
   for f in ['saveProvider','deleteProvider','saveRule','saveVirtualModel','deleteVirtualModel','deleteRule']:self.assertIn('showCommit(',body(f))
  def test_MCP_contract_change_bumps_server_implementation_version(self):
   s=(ROOT/'app/src/main/java/com/aqi/ccb/gateway/McpServer.kt').read_text();self.assertIn('put("version", "0.5.0")',s)
+ def test_build_identity_group_uses_composable_item_slots(self):
+  settings=(ROOT/'app/src/main/java/com/aqi/ccb/ui/SettingsScreen.kt').read_text()
+  self.assertTrue(build_identity_rows_use_slots(settings), 'CardGroup body is a non-composable DSL; use item slots')
+  dsl=(ROOT/'app/src/main/java/com/aqi/ccb/ui/CardGroup.kt').read_text()
+  self.assertIn('content: CardGroupScope.() -> Unit',dsl)
+  for field in ['build.versionName','build.versionCode','build.sourceCommit','build.sequence','build.kind']:self.assertIn(field,settings)
+ def test_build_identity_guard_rejects_direct_Text_in_DSL(self):
+  bad='CardGroup(title = { Text("版本与构建") }) {\n                Text("A")\n                Text("B")\n                Text("C")\n            }\n// ---------- 界面 ----------'
+  self.assertFalse(build_identity_rows_use_slots(bad))
 if __name__=='__main__':unittest.main(verbosity=2)
