@@ -19,6 +19,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Project build identity regression
+        run: python3 tools/test_build_identity.py
+      - name: Allocate immutable project build identity
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/build_identity.py allocate --policy version-policy.json --output build/identity/build.json
       - name: Debug signing regression
         run: python3 audit/debug-signing-phase6/test_debug_signing.py
       - name: Signature output and toolchain compatibility regression
@@ -57,10 +63,16 @@ jobs:
         run: python3 audit/float-state-phase8-turn512/test_render_contract.py
       - name: Multi-upstream logical request colors regression
         run: python3 audit/float-state-phase8-turn512/run_visual.py --fetch-deps --output build/visual-state-audit
+      - name: Shared workflows and editor task regression
+        run: python3 audit/app-foundation-phase9-turn514/run_foundation.py --fetch-deps --output build/app-foundation-audit
+      - name: Application entry and UI lifecycle source contract (not device UI test)
+        run: python3 audit/app-foundation-phase9-turn514/test_app_contract.py
       - name: Assemble debug
-        run: gradle :app:signingReport assembleDebug --no-daemon --stacktrace -PgatewayDebugKeystore="$RUNNER_TEMP/gateway-debug.keystore"
+        run: gradle :app:signingReport assembleDebug --no-daemon --stacktrace -PgatewayDebugKeystore="$RUNNER_TEMP/gateway-debug.keystore" -PgatewayBuildIdentity="$GITHUB_WORKSPACE/build/identity/build.json"
       - name: Verify fixed debug APK certificate
         run: python3 tools/debug_signing.py verify --apk app/build/outputs/apk/debug/app-debug.apk --sdk "$ANDROID_HOME" --build-tools-version 36.0.0 --output build/debug-signing-audit/results.json
+      - name: Verify application Manifest and embedded build identity
+        run: python3 tools/build_identity.py verify-apk --identity build/identity/build.json --apk app/build/outputs/apk/debug/app-debug.apk --aapt "$ANDROID_HOME/build-tools/34.0.0/aapt" --output build/identity/verified-apk.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -76,4 +88,6 @@ jobs:
             build/mcp-debug-audit/**
             build/debug-signing-audit/**
             build/visual-state-audit/**
+            build/app-foundation-audit/**
+            build/identity/**
           if-no-files-found: warn

@@ -28,7 +28,8 @@ else:
  jars=[p for d in dirs for p in d.glob('*.jar')]
 cp=os.pathsep.join(map(str,jars));g=ROOT/'app/src/main/java/com/aqi/ccb/gateway'
 names=['ConfigStore','ConfigValidation','ConfigCommands','VirtualModelStore','GatewayRuntime','HttpUtil','BaseUrlProbe','BatchTester','ModelProbe','Contracts','RequestVisualState','RateLimit','RuleEngine','SafeExpr','SocketIo','SwitchPolicy','GateLog','JsonUtil','GatewayServer','McpServer','VirtualModel','RequestTransform','ServerAccessPolicy','LocalAccessTokens']
-sources=[g/(n+'.kt') for n in names]+[HERE/'BridgeContext.kt',ROOT/'audit/security-phase1/AuditPlatformStubs.kt',HERE/'ConfigAudit.kt',HERE/'BridgePlatform.kt',HERE/'UiStyleAdapter.kt']+[g.parent/'data'/n for n in ['ModelInfo.kt','ProviderDraft.kt','ProviderRepo.kt','VirtualModelDraft.kt','VirtualModelRepo.kt','AppSettings.kt']]
+sources=[g/(n+'.kt') for n in names]+[HERE/'BridgeContext.kt',ROOT/'audit/security-phase1/AuditPlatformStubs.kt',HERE/'ConfigAudit.kt',HERE/'BridgePlatform.kt',HERE/'UiStyleAdapter.kt']+[g.parent/'data'/n for n in ['ModelInfo.kt','ProviderDraft.kt','ProviderRepo.kt','VirtualModelDraft.kt','VirtualModelRepo.kt','AppSettings.kt','McpBridge.kt','BackgroundDebug.kt','BuildInfo.kt']]
+sources += sorted((g.parent/'application').glob('*.kt')) + [ROOT/'audit/app-foundation-phase9-turn514/BuildConfigFixture.kt']
 summary={'scope':'JVM security regression; Android lifecycle/UI requires Android build and separate acceptance',
  'sources':{str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}}
 jar=out/'security-tests.jar'

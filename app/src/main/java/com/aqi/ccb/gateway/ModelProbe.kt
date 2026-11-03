@@ -45,7 +45,8 @@ object ModelProbe {
     }
 
     /** Probe only proves observed behavior. Negative results do not prove permanent lack of support. */
-    fun probe(baseUrl: String, apiKey: String, modelId: String, timeoutMs: Int = 30000): ProbeResult {
+    fun probe(baseUrl: String, apiKey: String, modelId: String, timeoutMs: Int = 30000, cancelled: () -> Boolean = { false }): ProbeResult {
+        if (cancelled() || Thread.currentThread().isInterrupted) return ProbeResult(false,false,false,0,"probe_cancelled")
         require(timeoutMs in 1..120_000) { "Probe timeout must be bounded" }
         val url = baseUrl.trimEnd('/') + "/chat/completions"
         fun request(stream: Boolean, tools: Boolean = false): String = JSONObject().apply {
@@ -67,9 +68,9 @@ object ModelProbe {
                 if (first.error != null) "non_streaming_transport_error" else "non_streaming_invalid_response_http_${first.code}",
                 "non_streaming=not_proven;streaming=not_tested;tool_call=not_tested")
         }
-        if (Thread.currentThread().isInterrupted) return ProbeResult(true, false, false, latency, detail = "probe_cancelled")
+        if (cancelled() || Thread.currentThread().isInterrupted) return ProbeResult(true, false, false, latency, detail = "probe_cancelled")
         val streamOk = streamEvidence(url, apiKey, request(true), timeoutMs)
-        if (Thread.currentThread().isInterrupted) return ProbeResult(true, streamOk, false, latency, detail = "probe_cancelled")
+        if (cancelled() || Thread.currentThread().isInterrupted) return ProbeResult(true, streamOk, false, latency, detail = "probe_cancelled")
         val tool = HttpUtil.postJson(url, apiKey, request(false, true), timeoutMs)
         val toolOk = tool.ok && objectOrNull(tool.body)?.let { hasRequestedTool(it) } == true
         return ProbeResult(true, streamOk, toolOk, latency, detail =

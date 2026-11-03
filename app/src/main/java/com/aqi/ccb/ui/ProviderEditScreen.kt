@@ -75,7 +75,19 @@ fun ProviderEditScreen(
     onUpdateModel: ((com.aqi.ccb.data.ModelInfo) -> Unit)? = null,
     onSuffixChange: ((String) -> Unit)? = null,
     testResult: String?,
+    busy: Boolean = false,
+    onCancelTest: (() -> Unit)? = null,
 ) {
+    var pendingTest by remember { mutableStateOf<String?>(null) }
+    pendingTest?.let { kind ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { pendingTest = null },
+            title = { Text("确认上游测试？") },
+            text = { Text(if(kind=="batch") "仅测试已勾选模型，最多20个；每个模型可能触发目录查询和生成能力请求，可能计费。取消不保证上游已发请求不计费。" else "测试第一个已勾选模型，包含非流式、SSE和工具调用，最多3次生成请求，可能计费。不会因成功自动启用模型。") },
+            confirmButton = { TextButton(onClick={pendingTest=null;if(kind=="batch")onTestAll?.invoke() else onTest?.invoke()}) { Text("确认测试") } },
+            dismissButton = { TextButton(onClick={pendingTest=null}) { Text("取消") } },
+        )
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -220,7 +232,7 @@ fun ProviderEditScreen(
                     Column {
                         OutlinedButton(
                             onClick = { onProbeModels?.invoke() },
-                            enabled = draft.baseUrl.isValidHttpUrl(),
+                            enabled = !busy && draft.baseUrl.isValidHttpUrl(),
                             modifier = Modifier.fillMaxWidth(),
                         ) { Text("探测模型") }
                         if (draft.models.isNotEmpty()) {
@@ -246,17 +258,17 @@ fun ProviderEditScreen(
                     },
                 ) {
                     OutlinedButton(
-                        onClick = { onTestAll?.invoke() },
-                        enabled = draft.baseUrl.isValidHttpUrl() && draft.models.isNotEmpty(),
+                        onClick = { pendingTest = "batch" },
+                        enabled = !busy && draft.baseUrl.isValidHttpUrl() && draft.models.any{it.enabled},
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("批量测试全部模型") }
+                    ) { Text("测试选中模型（最多20个）") }
                 }
 
                 formItem(headlineContent = { Text("③ 连接测试（非流式/流式/工具）") }) {
                     Column {
                         OutlinedButton(
-                            onClick = { onTest?.invoke() },
-                            enabled = draft.baseUrl.isValidHttpUrl() && draft.modelId.isNotBlank(),
+                            onClick = { pendingTest = "single" },
+                            enabled = !busy && draft.baseUrl.isValidHttpUrl() && draft.models.any{it.enabled},
                             modifier = Modifier.fillMaxWidth(),
                         ) { Text("连接测试") }
                         Spacer(Modifier.height(6.dp))
@@ -267,6 +279,11 @@ fun ProviderEditScreen(
                         )
                     }
                 }
+            }
+
+            if (busy) {
+                OutlinedButton(onClick={onCancelTest?.invoke()},modifier=Modifier.fillMaxWidth()) { Text("取消当前测试/发现任务") }
+                Text("已发送的请求可能仍在上游处理；取消会阻止后续阶段与旧结果回填",style=MaterialTheme.typography.bodySmall)
             }
 
             // ---------- 限流（本项目的关键差异化，放在 provider 级） ----------

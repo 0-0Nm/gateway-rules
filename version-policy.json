@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "project": "gateway-rules",
+  "repository": "0-0Nm/gateway-rules",
+  "workflowPath": ".github/workflows/build.yml",
+  "branch": "main",
+  "major": 0,
+  "minor": 3,
+  "validationRound": 0,
+  "versionCodeOffset": 1000000,
+  "rule": "\u4e3b.\u6b21.\u672c.\u672b = user-controlled major / functional iteration / user validation round / project CI build sequence",
+  "migration": "Preserve major0; existing0.2 is the migration baseline. This functional iteration is0.3.0; reset display-build at the observed previous project run_number250, so its next official build is0.3.0.1. No global toolbox counter.",
+  "retryPolicy": "A GitHub re-run must not produce a duplicate build identity: use a fresh workflow_dispatch (new run_number), not re-run old jobs.",
+  "counterScope": "GITHUB_RUN_NUMBER of this repository and this fixed workflow path. Changing workflow counter lineage or code offset requires an explicit version migration review. Display sequence = project run_number minus buildSequenceOrigin. When minor or user validation round advances, review and reset origin to the last allocated project run number; Android code never resets.",
+  "buildSequenceOrigin": 250
+}

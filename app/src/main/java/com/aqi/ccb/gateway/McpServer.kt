@@ -232,7 +232,7 @@ class McpServer(
         })
         put("serverInfo", JSONObject().apply {
             put("name", "gateway-rules-mcp")
-            put("version", "0.4.0")
+            put("version", "0.5.0")
         })
     }
 
@@ -258,13 +258,15 @@ class McpServer(
         ))
         arr.put(tool(
             "gw_test_models",
-            "批量测试某个提供商的全部模型，返回每个模型的延迟与可用性",
+            "测试已勾选模型，最多20个，可能产生上游费用；必须confirm=true。目录可达不等于生成能力，取消不保证零费用。",
             JSONObject().apply {
                 put("type", "object")
                 put("properties", JSONObject().apply {
                     put("providerId", schema("string", "提供商 ID"))
+                    put("confirm", schema("boolean", "明确同意测试最多20个已勾选模型，可能计费"))
                 })
-                put("required", JSONArray().put("providerId"))
+                put("required", JSONArray().put("providerId").put("confirm"))
+                put("additionalProperties",false)
             }
         ))
         arr.put(tool(
@@ -496,7 +498,11 @@ class McpServer(
                     args.optString("baseUrl"),
                     args.optString("apiKey"),
                 )
-                "gw_test_models" -> cfg.testModels(args.optString("providerId"))
+                "gw_test_models" -> {
+                    require(args.opt("confirm")==true) { "confirm=true required: selected-model tests may incur upstream charges" }
+                    require(args.keys().asSequence().all{it in setOf("providerId","confirm")}) { "Unknown test argument" }
+                    cfg.testModels(args.getString("providerId"))
+                }
                 "gw_list_rules" -> cfg.listRulesJson()
                 "gw_list_virtual_models" -> cfg.listVirtualModelsJson()
                 "gw_get_status" -> cfg.statusJson(gatewayPort)

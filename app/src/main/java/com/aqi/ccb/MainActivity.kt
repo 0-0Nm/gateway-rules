@@ -39,6 +39,8 @@ import com.aqi.ccb.gateway.McpService
 import com.aqi.ccb.data.AppSettings
 import com.aqi.ccb.data.DemoFallback
 import com.aqi.ccb.data.McpBridge
+import com.aqi.ccb.application.ProviderTaskGate
+import com.aqi.ccb.application.ProviderWorkflows
 import com.aqi.ccb.data.ModelInfo
 import com.aqi.ccb.gateway.RateLimiter
 import com.aqi.ccb.gateway.RatePolicy
@@ -127,6 +129,10 @@ class MainActivity : ComponentActivity() {
     private var editingProviderIndex by mutableStateOf(-1)
     private var providerDraft by mutableStateOf(ProviderDraft())
     private var providerTest by mutableStateOf<String?>(null)
+    private var providerBusy by mutableStateOf(false)
+    private val providerTasks = ProviderTaskGate()
+    private var providerWorker: Thread? = null
+    private var providerBatch: BatchTester.Handle? = null
 
     private var editingRuleId by mutableStateOf<String?>(null)
     private var ruleDraft by mutableStateOf(RuleDraft())
@@ -248,8 +254,8 @@ class MainActivity : ComponentActivity() {
                     "provider" -> ProviderEditScreen(
                         draft = providerDraft,
                         isNew = editingProviderIndex < 0,
-                        onDraftChange = { providerDraft = it },
-                        onBack = { route = "main"; refreshMain() },
+                        onDraftChange = { updateProviderDraft(it) },
+                        onBack = { cancelProviderWork(); route = "main"; refreshMain() },
                         onSave = { configAction { saveProvider() } },
                         onDelete = if (editingProviderIndex >= 0) ({ configAction { deleteProvider() } }) else null,
                         onTest = { testProvider() },
@@ -272,9 +278,9 @@ class MainActivity : ComponentActivity() {
                                 providerDraft = providerDraft.copy(models = cur)
                             }
                         },
-                        onSuffixChange = { st ->
-                            providerDraft = providerDraft.copy(suffixStyle = st)
-                        },
+                        onSuffixChange = { st -> updateProviderDraft(providerDraft.copy(suffixStyle = st)) },
+                        busy = providerBusy,
+                        onCancelTest = { cancelProviderWork(); providerTest = "测试已取消；已发送的上游请求可能仍产生费用" },
                         testResult = providerTest,
                     )
                     "settings" -> SettingsScreen(
@@ -502,6 +508,7 @@ class MainActivity : ComponentActivity() {
                             mainState = mainState.copy(floatAlpha = pct)
                         },
                         onAddProvider = {
+                            cancelProviderWork()
                             editingProviderIndex = -1
                             providerDraft = ProviderDraft()
                             providerTest = null
@@ -647,6 +654,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        cancelProviderWork()
         ui.removeCallbacksAndMessages(null)
         McpService.removeListener(mcpStateListener)
         GatewayService.removeListener(gwStateListener)
@@ -829,6 +837,7 @@ class MainActivity : ComponentActivity() {
     private fun openProvider(index: Int) {
         val list = ProviderRepo.list(this)
         if (index !in list.indices) return
+        cancelProviderWork()
         editingProviderIndex = index
         providerDraft = list[index]
         providerTest = null
@@ -842,24 +851,30 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showCommit(subject:String,commit:ConfigStore.Commit) {
+        val persisted=if(commit.changed)"已保存" else "配置未变"
+        val runtime=when {commit.applied->"运行态已应用";commit.applyError!=null->"运行态应用失败，配置已保留";else->"运行态尚未应用"}
+        mainState=mainState.copy(statusNote="$subject：$persisted · 版本${commit.revision} · $runtime")
+    }
+
     private fun saveProvider() {
+        cancelProviderWork()
         if (!providerDraft.isComplete) {
             providerTest = "名称 / Base URL / 模型 ID 必填"
             return
         }
-        if (ProviderRepo.save(this, providerDraft)) {
-            editingProviderIndex = -1
-            providerDraft = ProviderDraft()
-            providerTest = null
-            route = "main"
-            refreshMain()
-        } else {
-            providerTest = "保存失败"
-        }
+        val commit = ProviderRepo.saveCommitted(this,providerDraft)
+        showCommit("提供商",commit)
+        editingProviderIndex = -1
+        providerDraft = ProviderDraft()
+        providerTest = null
+        route = "main"
+        refreshMain()
     }
 
     private fun deleteProvider() {
-        ProviderRepo.delete(this, providerDraft.idOr())
+        cancelProviderWork()
+        showCommit("删除提供商",com.aqi.ccb.gateway.ConfigCommands.deleteProvider(this,providerDraft.idOr()))
         editingProviderIndex = -1
         providerDraft = ProviderDraft()
         route = "main"
@@ -896,196 +911,96 @@ class MainActivity : ComponentActivity() {
 
     // ==================== 批量测试 ====================
 
-    /** 批量测试当前提供商的所有模型（进度回填到 draft.testingProgress） */
+    /** Invalidate old tasks before changing editor identity, connection or Activity lifecycle. */
+    private fun cancelProviderWork() {
+        providerTasks.invalidate()
+        providerBatch?.cancel(); providerBatch = null
+        providerWorker?.interrupt(); providerWorker = null
+        providerBusy = false
+        providerDraft = providerDraft.copy(testingProgress = "")
+    }
+    private fun updateProviderDraft(next: ProviderDraft) {
+        val old = providerDraft
+        val changed = old.idOr() != next.idOr() || old.baseUrl != next.baseUrl || old.apiKey != next.apiKey ||
+            old.suffixStyle != next.suffixStyle || old.configRevision != next.configRevision
+        if (changed) cancelProviderWork()
+        providerDraft = if (changed) next.copy(testingProgress = "") else next
+    }
+    private fun beginProviderWork(message: String): ProviderTaskGate.Ticket {
+        cancelProviderWork()
+        providerBusy = true; providerTest = message
+        return providerTasks.begin(providerDraft.idOr())
+    }
+    private fun ownsProviderWork(ticket: ProviderTaskGate.Ticket): Boolean =
+        route == "provider" && providerTasks.accepts(ticket,providerDraft.idOr())
+    private fun finishProviderWork(ticket: ProviderTaskGate.Ticket) {
+        if (providerTasks.complete(ticket,providerDraft.idOr())) {
+            providerBusy = false; providerWorker = null; providerBatch = null
+            providerDraft = providerDraft.copy(testingProgress = "")
+        }
+    }
     private fun testAllModels() {
         val d = providerDraft
-        if (d.models.isEmpty()) {
-            providerTest = "没有模型可测，先点『探测模型』"
-            return
-        }
-        if (!d.baseUrl.startsWith("http")) {
-            providerTest = "Base URL 需以 http(s):// 开头"
-            return
-        }
-        providerDraft = providerDraft.copy(testingProgress = "0/${d.models.size}")
-        providerTest = "批量测试中…"
-
-        val current = d.models.toList()
-        // 用固定线程池并发测，最多 4 并发，避免打爆上游
-        BatchTester.testAll(
-            baseUrl = d.baseUrl,
-            apiKey = d.apiKey,
-            models = current,
-            concurrency = 4,
-            onItem = { tested ->
-                ui.post {
-                    val cur = providerDraft.models.toMutableList()
-                    val idx = cur.indexOfFirst { it.modelId == tested.modelId }
-                    if (idx >= 0) {
-                        cur[idx] = tested
-                        providerDraft = providerDraft.copy(models = cur)
+        val selected = ProviderWorkflows.selectedForTest(d.models)
+        if(selected.isEmpty()) { providerTest = "先勾选要测试的模型；不会自动测试所有已发现模型"; return }
+        val ticket = beginProviderWork("测试选中模型，最多${ProviderWorkflows.MAX_BATCH_MODELS}个，可能产生费用")
+        providerDraft = providerDraft.copy(testingProgress = "0/${selected.size}")
+        providerBatch = BatchTester.testAll(d.baseUrl,d.apiKey,selected,concurrency=2,
+            onItem = { tested -> ui.post {
+                if(ownsProviderWork(ticket)) providerDraft = providerDraft.copy(models=providerDraft.models.map { current ->
+                    if(current.modelId==tested.modelId) ProviderWorkflows.mergeTestFields(current,tested) else current
+                })
+            } },
+            onProgress = { progress -> ui.post {
+                if(ownsProviderWork(ticket)) {
+                    providerDraft = providerDraft.copy(testingProgress="${progress.done}/${progress.total}")
+                    if(progress.finished) {
+                        providerTest = "选中模型测试完成：${progress.done}/${progress.total}；未自动改变勾选"
+                        finishProviderWork(ticket)
                     }
                 }
-            },
-            onProgress = { prog ->
-                ui.post {
-                    providerDraft = providerDraft.copy(
-                        testingProgress = "${prog.done}/${prog.total}"
-                    )
-                    if (prog.finished) {
-                        val ok = providerDraft.models.count { it.available == true }
-                        providerTest = "测试完成：$ok / ${prog.total} 可用"
-                        providerDraft = providerDraft.copy(testingProgress = "")
-                    }
-                }
-            },
-        )
+            } })
     }
-
-    /**
-     * 探测模型 —— 先按 suffixStyle 决定端点，再拉 /models 列表。
-     * AUTO 模式下依次尝试 /v1、/v1beta、/openai、/compatible-mode/v1。
-     */
     private fun probeModels() {
         val d = providerDraft
-        if (!d.baseUrl.startsWith("http")) {
-            providerTest = "Base URL 需以 http(s):// 开头"
-            return
-        }
-        providerTest = "探测中…"
-        Thread {
-            val results = StringBuilder()
-            var resolvedBase: String? = null
-            var modelList: List<String> = emptyList()
-
-            if (d.suffixStyle == "AUTO") {
-                val r = com.aqi.ccb.gateway.BaseUrlProbe.probe(d.baseUrl, d.apiKey)
-                if (r.ok) {
-                    resolvedBase = r.resolvedUrl
-                    results.append(r.summary())
-                    modelList = com.aqi.ccb.gateway.BaseUrlProbe
-                        .listModels(r.resolvedUrl!!, d.apiKey)
-                } else {
-                    results.append(r.summary())
-                }
-            } else {
-                // 手动指定：按类型拼后缀
-                val base = when (d.suffixStyle) {
-                    "OPENAI" -> d.baseUrl.trimEnd('/') + "/v1"
-                    "GOOGLE" -> d.baseUrl.trimEnd('/') + "/v1beta"
-                    "OPENAI_COMPAT" -> d.baseUrl.trimEnd('/') + "/openai"
-                    "ALIYUN" -> d.baseUrl.trimEnd('/') + "/compatible-mode/v1"
-                    else -> d.baseUrl.trimEnd('/')
-                }
-                modelList = com.aqi.ccb.gateway.BaseUrlProbe.listModels(base, d.apiKey)
-                if (modelList.isNotEmpty()) {
-                    resolvedBase = base
-                    results.append("可用：").append(base)
-                        .append(" · 发现 ").append(modelList.size).append(" 个模型")
-                } else {
-                    results.append("失败：").append(base).append(" 无模型列表")
-                }
-            }
-
-            ui.post {
-                if (resolvedBase != null && modelList.isNotEmpty()) {
-                    // 保留已测过的模型结果，新发现的补进来
-                    val old = providerDraft.models.associateBy { it.modelId }
-                    val merged = modelList.map { id ->
-                        old[id] ?: ModelInfo(modelId = id)
+        val ticket = beginProviderWork("获取模型列表中；不执行生成能力测试")
+        providerWorker = Thread({
+            try {
+                val result = ProviderWorkflows.discover(d.baseUrl,d.apiKey,d.suffixStyle,cancelled=ticket::isCancelled)
+                ui.post {
+                    if(ownsProviderWork(ticket)) {
+                        if(result.ok) providerDraft = providerDraft.copy(baseUrl=result.resolvedUrl,
+                            models=ProviderWorkflows.mergeDiscovered(providerDraft.models,result.models))
+                        providerTest = result.summary(); finishProviderWork(ticket)
                     }
-                    providerDraft = providerDraft.copy(
-                        baseUrl = resolvedBase!!,
-                        models = merged,
-                    )
                 }
-                providerTest = results.toString()
-            }
-        }.start()
+            } catch (_: java.util.concurrent.CancellationException) { /* invalidated; no new UI state */ }
+            catch (e: Exception) { ui.post {
+                if(ownsProviderWork(ticket)) {providerTest="发现失败："+e.javaClass.simpleName;finishProviderWork(ticket)}
+            } }
+        },"provider-discovery").apply { start() }
     }
-
-    /**
-     * 连接测试 —— rikka 三件套：非流式 / 流式 / 工具调用。
-     * 未填模型 ID 时先拉 /models 自动选第一个。
-     */
     private fun testProvider() {
         val d = providerDraft
-        if (!d.baseUrl.startsWith("http")) {
-            providerTest = "Base URL 需以 http(s):// 开头"
-            return
-        }
-        providerTest = "测试中…（非流式/流式/工具）"
-        Thread {
-            // 没填模型就先去拉列表
-            var modelId = d.models.firstOrNull()?.modelId ?: ""
-            if (modelId.isEmpty()) {
-                val ids = runCatching { fetchModelIds(d.baseUrl.trimEnd('/'), d.apiKey) }.getOrNull()
-                if (ids != null && !ids.startsWith("ERR:") && ids.isNotBlank()) {
-                    val list = ids.split("\n").filter { it.isNotBlank() }
-                    modelId = list.firstOrNull() ?: ""
-                    ui.post {
-                        // 与 addProvider 保持一致：拉到的模型默认不勾选，
-                        // 否则「初次筛选」会被这里的重新拉取绕过。
-                        providerDraft = providerDraft.copy(
-                            models = list.map { ModelInfo(modelId = it, enabled = false) }
-                        )
+        val model = d.models.firstOrNull { it.enabled }
+        if(model==null) {providerTest="先明确勾选一个模型；能力测试可能计费";return}
+        val ticket = beginProviderWork("能力测试：${model.modelId}；一次非流式、流式与工具调用")
+        providerWorker = Thread({
+            try {
+                val result = ProviderWorkflows.probeOne(d.baseUrl,d.apiKey,model.modelId,cancelled=ticket::isCancelled)
+                ui.post {
+                    if(ownsProviderWork(ticket)) {
+                        providerDraft = providerDraft.copy(models=providerDraft.models.map { current ->
+                            if(current.modelId==model.modelId) ProviderWorkflows.applyCapabilityResult(current,result) else current
+                        },probeResult=result.summary())
+                        providerTest=result.summary();finishProviderWork(ticket)
                     }
                 }
-            }
-            if (modelId.isEmpty()) {
-                ui.post { providerTest = "无法确定模型 ID" }
-                return@Thread
-            }
-            val res = ModelProbe.probe(d.baseUrl.trimEnd('/'), d.apiKey, modelId)
-            ui.post {
-                providerTest = res.summary()
-                // 关键修复：探测结果必须写回 ModelInfo，
-                // 否则 require(tools) 永远匹配不到——网关不知道任何模型带 TOOL。
-                val cur = providerDraft.models.toMutableList()
-                val idx = cur.indexOfFirst { it.modelId == modelId }
-                if (idx >= 0) {
-                    val old = cur[idx]
-                    val abs = mutableListOf<String>()
-                    if (res.toolCall) abs.add("TOOL")
-                    if (old.abilities.contains("REASONING")) abs.add("REASONING")
-                    if (old.abilities.contains("VISION")) abs.add("VISION")
-                    cur[idx] = old.copy(
-                        available = res.nonStreaming,
-                        latencyMs = if (res.nonStreaming) res.latencyMs else -1,
-                        lastError = res.error ?: "",
-                        testedAt = System.currentTimeMillis(),
-                        abilities = abs,
-                        nonStreaming = res.nonStreaming,
-                        streaming = res.streaming,
-                        toolCall = res.toolCall,
-                        // 探测成功即视为用户明确要用它，自动勾选。
-                        // 探测失败则不改动，保持原勾选状态（避免误开不可用的模型）。
-                        enabled = if (res.nonStreaming) true else old.enabled,
-                    )
-                    providerDraft = providerDraft.copy(
-                        models = cur,
-                        probeResult = res.summary(),
-                    )
-                } else {
-                    providerDraft = providerDraft.copy(probeResult = res.summary())
-                }
-            }
-        }.start()
-    }
-
-    /** 拉 /models 列表，返回换行分隔的模型 ID；失败返回 "ERR:..." */
-    private fun fetchModelIds(base: String, key: String): String {
-        val r = com.aqi.ccb.gateway.HttpUtil.get("$base/models", key, 20_000)
-        if (r.error != null) return "ERR:" + r.error
-        if (!r.ok) return "ERR:http_" + r.code
-        val arr = runCatching { JSONObject(r.body).optJSONArray("data") }.getOrNull()
-            ?: return "ERR:no data field"
-        val sb = StringBuilder()
-        for (i in 0 until arr.length()) {
-            val id = arr.optJSONObject(i)?.optString("id")
-            if (!id.isNullOrBlank()) sb.append(id).append("\n")
-        }
-        return if (sb.isEmpty()) "ERR:empty model list" else sb.toString()
+            } catch (_: java.util.concurrent.CancellationException) { }
+            catch (e: Exception) { ui.post {
+                if(ownsProviderWork(ticket)) {providerTest="测试失败："+e.javaClass.simpleName;finishProviderWork(ticket)}
+            } }
+        },"provider-capability").apply { start() }
     }
 
     // ==================== 规则 ====================
@@ -1133,10 +1048,9 @@ class MainActivity : ComponentActivity() {
             val oldExec=original.optJSONObject("execute")
             put("execute",if(oldExec?.optString("op")==d.executeOp)oldExec else JSONObject().put("op",d.executeOp).put("args",JSONObject()))
         }
-        ConfigStore.transact(this,d.configRevision) { state ->
-            val i=state.rules.indexOfFirst{it.optString("id")==rule.getString("id")}
-            if(i<0)state.rules.add(rule)else state.rules[i]=rule
-        }
+        d.configRevision?.let { rule.put("expectedRevision",it) }
+        val commit = com.aqi.ccb.gateway.ConfigCommands.saveRule(this,rule)
+        showCommit("规则",commit)
         editingRuleId = null
         ruleDraft = RuleDraft()
         route = "main"
@@ -1154,17 +1068,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun saveVirtualModel() {
-        if (VirtualModelRepo.save(this, vmDraft)) {
-            editingVmName = null
-            vmDraft = VirtualModelDraft()
-            route = "main"
-            refreshMain()
-        }
+        val commit=VirtualModelRepo.saveCommitted(this,vmDraft)
+        showCommit("虚拟模型",commit)
+        editingVmName = null
+        vmDraft = VirtualModelDraft()
+        route = "main"
+        refreshMain()
     }
 
     private fun deleteVirtualModel() {
         val name = editingVmName ?: return
-        VirtualModelRepo.delete(this, name)
+        showCommit("删除虚拟模型",com.aqi.ccb.gateway.ConfigCommands.deleteVirtualModel(this,name))
         editingVmName = null
         vmDraft = VirtualModelDraft()
         route = "main"
@@ -1173,7 +1087,7 @@ class MainActivity : ComponentActivity() {
 
     private fun deleteRule() {
         val id = editingRuleId ?: return
-        ProviderRepo.deleteRule(this, id)
+        showCommit("删除规则",com.aqi.ccb.gateway.ConfigCommands.deleteRule(this,id))
         editingRuleId = null
         ruleDraft = RuleDraft()
         route = "main"

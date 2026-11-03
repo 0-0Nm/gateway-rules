@@ -101,7 +101,7 @@ object BaseUrlProbe {
      * 逐个候选试 /models，返回第一个可用的。
      * 全同步执行，调用方放后台线程。
      */
-    fun probe(input: String, apiKey: String, timeoutMs: Int = 12000): Result {
+    fun probe(input: String, apiKey: String, timeoutMs: Int = 12000, cancelled: () -> Boolean = { false }): Result {
         val cands = candidates(input)
         if (cands.isEmpty()) {
             return Result(false, null, null, 0, emptyList(), "baseUrl 为空")
@@ -109,6 +109,7 @@ object BaseUrlProbe {
         val tried = mutableListOf<Pair<String, String>>()
 
         for (c in cands) {
+            if(cancelled() || Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("Discovery cancelled")
             val r = tryFetchModels(c.url, apiKey, timeoutMs)
             tried.add(c.url to r.second)
             if (r.first > 0) {
@@ -140,10 +141,11 @@ object BaseUrlProbe {
     fun listModels(baseUrl: String, apiKey: String, timeoutMs: Int = 15000): List<String> {
         val r = HttpUtil.get("${baseUrl.trimEnd('/')}/models", apiKey, timeoutMs)
         if (!r.ok) return emptyList()
-        val arr = runCatching { JSONObject(r.body).optJSONArray("data") }.getOrNull()
-            ?: return emptyList()
+        val json=runCatching{JSONObject(r.body)}.getOrNull() ?: return emptyList()
+        val arr=json.optJSONArray("data") ?: json.optJSONArray("models") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { i ->
-            arr.optJSONObject(i)?.optString("id")?.takeIf { it.isNotBlank() }
-        }
+            val item=arr.optJSONObject(i)
+            ((item?.opt("id") as? String) ?: (item?.opt("name") as? String))?.takeIf{it.isNotBlank()}
+        }.distinct()
     }
 }

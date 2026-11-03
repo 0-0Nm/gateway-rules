@@ -17,8 +17,13 @@ object VirtualModelRepo {
 
     fun save(context: Context, draft: VirtualModelDraft): Boolean {
         if (!draft.isComplete) return false
-        com.aqi.ccb.gateway.ConfigCommands.saveVirtualModel(context, draft.toJson(), draft.configRevision)
+        saveCommitted(context,draft)
         return true
+    }
+
+    fun saveCommitted(context:Context,draft:VirtualModelDraft):com.aqi.ccb.gateway.ConfigStore.Commit {
+        require(draft.isComplete) { "Incomplete virtual model" }
+        return com.aqi.ccb.gateway.ConfigCommands.saveVirtualModel(context,draft.toJson(),draft.configRevision)
     }
 
     fun delete(context: Context, name: String) {
