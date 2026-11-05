@@ -203,6 +203,7 @@ fun main(args:Array<String>){
  test("shared_rule_command_enforces_expected_revision_from_UI_shape"){
   val c=ctx(root,"rules");ConfigCommands.saveRule(c,DemoFallback.ruleJson());val rev=ConfigStore.read(c).revision;ConfigCommands.saveRule(c,DemoFallback.ruleJson().put("expectedRevision",rev));var rejected=false;try{ConfigCommands.saveRule(c,DemoFallback.ruleJson().put("name","changed").put("expectedRevision",rev-1))}catch(_:ConfigStore.ConfigException){rejected=true};check(rejected)
  }
+ runUsageAudit(::test, File(root,"usage"))
  println("SUMMARY|cases=$total|passed=${total-failed}|failed=$failed")
  if(failed>0)kotlin.system.exitProcess(1)
 }

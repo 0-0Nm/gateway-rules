@@ -757,6 +757,7 @@ class MainActivity : ComponentActivity() {
         mainState = mainState.copy(
             virtualModels = vmRows,
             health = healthRows,
+            usage = com.aqi.ccb.gateway.UsageLedgerStore.open(File(filesDir, "usage-v1")).snapshot(),
             diagPath = diagPath,
             diagBind = s?.actualBind ?: "",
             diagAcceptAlive = s?.acceptAlivePublic() == true,

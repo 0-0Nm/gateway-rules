@@ -125,6 +125,7 @@ class GatewayServer(
     private val bindHost: String = "127.0.0.1",
     private val upstreamReadTimeoutMs: Int = 90_000,
     private val onVisualStateChanged: () -> Unit = {},
+    private val usageLedger: UsageLedger? = null,
 ) {
     init { require(upstreamReadTimeoutMs in 1..90_000)
         require(bindHost in setOf("127.0.0.1", "0.0.0.0")) { "Unsupported bind address" } }
@@ -285,6 +286,7 @@ class GatewayServer(
             .put("inflight",inflightPublic()).put("workers",workerCountPublic()).put("connections",tcpConnectionsPublic())
             .put("visualState",org.json.JSONObject(requestVisualStatePublic().asMap()))
             .put("health",org.json.JSONArray(healthSnapshotPublic().map{it.json()}))
+            .put("usage",usageLedger?.snapshot()?.json() ?: org.json.JSONObject.NULL)
             .put("uptimeSec",uptimeSecPublic()).put("providers",org.json.JSONArray(cfg.providers.map { p ->
                 org.json.JSONObject().put("id",p.id).put("enabled",p.enabled).put("errors",p.errors).put("breaker",p.breaker.name)
                     .put("openUntilMs",p.openUntilMs).put("rate",org.json.JSONObject(limiter.peek(p.id)))
@@ -431,7 +433,8 @@ class GatewayServer(
     private class RequestCancelled : java.io.IOException("request_cancelled")
 
     /** One request owns its connection, commit boundary and terminal record. */
-    private class RequestRun(val reqId: String, val attemptLimit: Int = Int.MAX_VALUE) {
+    private class RequestRun(val reqId: String, val attemptLimit: Int = Int.MAX_VALUE,
+                             val usageCapture: UsageRequestCapture? = null) {
         val started = System.nanoTime()
         val startedAtMs = System.currentTimeMillis()
         val owner = Thread.currentThread()
@@ -498,7 +501,7 @@ class GatewayServer(
 
     private fun runChat(output: OutputStream, reqId: String, body: ByteArray,
                         socket: Socket?, input: InputStream?, attemptLimit: Int = Int.MAX_VALUE) {
-        val run = RequestRun(reqId, attemptLimit)
+        val run = RequestRun(reqId, attemptLimit, usageLedger?.let { UsageRequestCapture(reqId) })
         activeRequests.add(run)
         val guarded = run.output(output)
         try {
@@ -550,6 +553,8 @@ class GatewayServer(
                     else -> { totalFail++; noteFailureTs(); latestFailure = run.reason; latestFailureReason = classifyFailure(run.reason) }
                 }
             }
+            // One journal record per logical request. Persistence errors are visible in its snapshot, not rethrown.
+            run.usageCapture?.finish(run.outcome)?.let { usageLedger?.append(it) }
             // The only terminal call for chat requests, including invalid input and cancellation.
             GateLog.requestEnd(reqId, run.success, run.provider, run.elapsed(), listOf(run.outcome, run.reason))
         }
@@ -613,6 +618,8 @@ class GatewayServer(
             }
             val at = System.nanoTime()
             var code: Int? = null
+            var usageAttempt: UsageAttemptCapture? = null
+            var responseComplete = false
             run.provider = c.p.id
             run.sent = false
             try {
@@ -620,13 +627,16 @@ class GatewayServer(
                 run.checkActive()
                 attempted = true
                 attemptCount++
+                usageAttempt = run.usageCapture?.begin(c.p, c.m, config.keys[c.p.apiKeyRef].orEmpty())
                 val conn = openUpstream(c, transformed, config.keys[c.p.apiKeyRef].orEmpty(), run)
                 code = conn.responseCode
                 run.checkActive()
                 if (code in 200..299) {
                     relayObserved(output, conn, stream,
                         progress = { requestVisual.progress(run.visualTicket) },
-                        evidenceLimited = { requestVisual.evidenceUnavailable(run.visualTicket) })
+                        evidenceLimited = { requestVisual.evidenceUnavailable(run.visualTicket) },
+                        usageObserver = usageAttempt?.observer)
+                    responseComplete = true
                     run.markSuccess()
                     val latency = (System.nanoTime() - at) / 1_000_000.0
                     synchronized(c.p) {
@@ -670,6 +680,7 @@ class GatewayServer(
                 GateLog.attempt(run.reqId, c.p.id, modelId, false, (System.nanoTime() - at) / 1_000_000.0, code, lastError)
                 if (run.sent || run.committed) break
             } finally {
+                usageAttempt?.finish(code, run.sent, responseComplete)
                 val conn = run.upstream.getAndSet(null)
                 try { conn?.disconnect() } catch (_: Exception) {}
                 limiter.release(c.p.id)
@@ -714,7 +725,8 @@ class GatewayServer(
 
     /** Byte-preserving transport: visual evidence is committed ONLY after downstream write+flush. */
     private fun relayObserved(output: OutputStream, conn: HttpURLConnection, stream: Boolean,
-                              progress: () -> Unit, evidenceLimited: () -> Unit) {
+                              progress: () -> Unit, evidenceLimited: () -> Unit,
+                              usageObserver: UsageObserver? = null) {
         val code = conn.responseCode
         val isSse = conn.contentType.orEmpty().substringBefore(';').trim().equals("text/event-stream", true)
         if (stream && !isSse) throw java.io.IOException("Expected SSE response")
@@ -727,6 +739,7 @@ class GatewayServer(
             var pendingProgress = false
             val tracker = if (isSse) SocketIo.SseCompletion { event ->
                 if (GenerationProgress.event(event, true)) pendingProgress = true
+                usageObserver?.observe(event)
             } else null
             var proof = if (!isSse) java.io.ByteArrayOutputStream() else null
             val buf = ByteArray(4096)
@@ -740,13 +753,17 @@ class GatewayServer(
                 if (pendingProgress) { progress(); pendingProgress = false }
                 proof?.let { body ->
                     if (body.size().toLong() + n <= GenerationProgress.MAX_NON_STREAM_BYTES) body.write(buf, 0, n)
-                    else { proof = null; evidenceLimited() }
+                    else { proof = null; evidenceLimited(); usageObserver?.limit() }
                 }
                 count += n
             }
             if (expected != null && count != expected) throw java.io.EOFException("Truncated upstream body")
             tracker?.requireComplete()
-            proof?.let { if (GenerationProgress.response(it.toByteArray())) progress() }
+            proof?.let {
+                val bytes = it.toByteArray()
+                if (GenerationProgress.response(bytes)) progress()
+                usageObserver?.observeBody(bytes)
+            }
         }
     }
 

@@ -168,7 +168,8 @@ class GatewayService : Service() {
 
         val srv = GatewayServer(port, providers, rules, limiter,
             LocalAccessTokens.gateway(this), vmodels, bindHost,
-            onVisualStateChanged = { FloatingBall.refreshFromProviders() })
+            onVisualStateChanged = { FloatingBall.refreshFromProviders() },
+            usageLedger = UsageLedgerStore.open(java.io.File(filesDir, "usage-v1")))
         // 优先用 Activity 预设值，其次用本服务缓存
         srv.logDirPath = if (pendingLogDir.isNotEmpty()) pendingLogDir else lastLogDir
         srv.configDirPath = filesDir.absolutePath

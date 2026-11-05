@@ -14,7 +14,7 @@ support=Path(os.environ.get('AUDIT_SUPPORT_LIB','/storage/emulated/0/Download/Ga
 cp=':'.join(str(p) for base in [compiler,support,ROOT/'audit/20261102/deps'] for p in sorted(base.glob('*.jar')))
 g=ROOT/'app/src/main/java/com/aqi/ccb/gateway';d=g.parent/'data'
 core=['Contracts','RequestVisualState','RateLimit','RuleEngine','SafeExpr','SocketIo','SwitchPolicy','GateLog','JsonUtil']
-more=['GatewayServer','McpServer','VirtualModel','RequestTransform','ConfigStore','VirtualModelStore','ConfigValidation','ConfigCommands','ServerAccessPolicy']
+more=['GatewayServer','UsageLedger','McpServer','VirtualModel','RequestTransform','ConfigStore','VirtualModelStore','ConfigValidation','ConfigCommands','ServerAccessPolicy']
 summary={'scope':'phase4 production source; original audit assertions byte-identical; explicit constructor tokens inherited; JVM subset',
  'baselineRemote':'ab79dfc208ac01b206f2f081b2c4359caecf9ee3',
  'compiler':'Kotlin 2.0.21 compiler, language/API 1.9; project Android build uses Kotlin 1.9.24',

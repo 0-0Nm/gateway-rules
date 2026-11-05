@@ -237,6 +237,7 @@ class McpBridge(private val context: Context) : McpConfig {
                 val st=ConfigStore.read(context);val gw=com.aqi.ccb.gateway.GatewayService.current
                 JSONObject(statusJson(AppSettings.gatewayPort(context))).put("ok",true)
                     .put("gatewayRunning",gw?.isRunning()==true).put("runtime",gw?.debugSnapshot()?:JSONObject.NULL)
+                    .put("usage",com.aqi.ccb.gateway.UsageLedgerStore.open(java.io.File(context.filesDir,"usage-v1")).snapshot().json())
                     .put("configValid",true).put("credentialCount",st.keys.size).put("foregroundActivityRequired",false)
                     .put("logStreams",JSONArray(listOf("system","calls"))).put("liveProbeSingleAttempt",true)
                     .put("notCovered",JSONArray(listOf("UI rendering","system permission dialogs","long-duration/device lifecycle acceptance")))

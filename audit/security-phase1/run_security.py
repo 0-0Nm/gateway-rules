@@ -27,7 +27,7 @@ else:
        ROOT/'audit/20261102/deps']
  jars=[p for d in dirs for p in d.glob('*.jar')]
 cp=os.pathsep.join(map(str,jars));g=ROOT/'app/src/main/java/com/aqi/ccb/gateway'
-names=['Contracts','RequestVisualState','RateLimit','RuleEngine','SafeExpr','SocketIo','SwitchPolicy','GateLog','JsonUtil','GatewayServer','McpServer','VirtualModel','RequestTransform','ServerAccessPolicy','LocalAccessTokens']
+names=['Contracts','RequestVisualState','RateLimit','RuleEngine','SafeExpr','SocketIo','SwitchPolicy','GateLog','JsonUtil','GatewayServer','UsageLedger','McpServer','VirtualModel','RequestTransform','ServerAccessPolicy','LocalAccessTokens']
 sources=[g/(n+'.kt') for n in names]+[HERE/'TokenContext.kt',HERE/'AuditPlatformStubs.kt',HERE/'SecurityAudit.kt']
 summary={'scope':'JVM security regression; Android lifecycle/UI requires Android build and separate acceptance',
  'sources':{str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}}

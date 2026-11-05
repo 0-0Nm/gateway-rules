@@ -77,4 +77,11 @@ class AppContract(unittest.TestCase):
   s=(ROOT/'app/src/main/java/com/aqi/ccb/ui/MainScreen.kt').read_text();group=s.split('CardGroup(title = { Text("上游健康") }) {',1)[1].split('// ==================== 连接配置',1)[0]
   prefix=group.split('item(',1)[0];self.assertNotIn('MaterialTheme.',prefix)
   self.assertRegex(group,r'headlineContent\s*=\s*\{\s*val color=when\(h.state\)')
+ def test_usage_store_shared_by_service_UI_and_MCP(self):
+  for p in ['gateway/GatewayService.kt','data/McpBridge.kt','MainActivity.kt']:
+   s=(ROOT/'app/src/main/java/com/aqi/ccb'/p).read_text();self.assertIn('UsageLedgerStore.open',s);self.assertIn('"usage-v1"',s)
+ def test_usage_panel_discloses_unknown_and_not_billing(self):
+  s=(ROOT/'app/src/main/java/com/aqi/ccb/ui/UsagePanel.kt').read_text();self.assertIn('用量未知',s);self.assertIn('费用与预算：尚未启用',s);self.assertIn('最多显示保留',s)
+ def test_usage_observer_does_not_force_upstream_usage_or_change_retry(self):
+  s=(ROOT/'app/src/main/java/com/aqi/ccb/gateway/GatewayServer.kt').read_text();self.assertNotIn('include_usage',s);self.assertIn('if (code !in setOf(429, 503)) break',s);self.assertIn('if (run.sent || run.committed) break',s);self.assertIn('usageObserver?.observe(event)',s)
 if __name__=='__main__':unittest.main(verbosity=2)

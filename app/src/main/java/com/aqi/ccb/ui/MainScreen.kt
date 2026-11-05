@@ -65,6 +65,7 @@ data class ProviderHealthRow(
 data class MainUiState(
     val running: Boolean = false,
     val health: List<ProviderHealthRow> = emptyList(),
+    val usage: com.aqi.ccb.gateway.UsageSummary = com.aqi.ccb.gateway.UsageSummary(),
     val virtualModels: List<VirtualRow> = emptyList(),
     val floatAlpha: Int = 80,
     val floatLocked: Boolean = false,
@@ -236,6 +237,11 @@ fun MainScreen(
                     }
                 }
             }
+            }
+
+            if (currentTab == "agg") {
+                Spacer(Modifier.height(8.dp))
+                UsagePanel(state.usage)
             }
 
             // ==================== 实时监控与路径诊断（聚合 tab）====================
