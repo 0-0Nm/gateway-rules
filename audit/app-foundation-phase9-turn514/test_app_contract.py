@@ -73,4 +73,8 @@ class AppContract(unittest.TestCase):
   s=(ROOT/'app/src/main/java/com/aqi/ccb/gateway/GatewayServer.kt').read_text();self.assertIn('if (code !in setOf(429, 503)) break',s);self.assertIn('if (run.sent || run.committed) break',s);self.assertIn('health.noteTransport',s)
  def test_health_UI_exposes_scope_impact_and_countdown(self):
   s=(ROOT/'app/src/main/java/com/aqi/ccb/ui/MainScreen.kt').read_text();self.assertIn('healthScopeLabel',s);self.assertIn('healthImpactLabel',s);self.assertIn('h.remainingSec',s);self.assertIn('不自动重放',s)
+ def test_health_theme_reads_are_inside_composable_item_slot(self):
+  s=(ROOT/'app/src/main/java/com/aqi/ccb/ui/MainScreen.kt').read_text();group=s.split('CardGroup(title = { Text("上游健康") }) {',1)[1].split('// ==================== 连接配置',1)[0]
+  prefix=group.split('item(',1)[0];self.assertNotIn('MaterialTheme.',prefix)
+  self.assertRegex(group,r'headlineContent\s*=\s*\{\s*val color=when\(h.state\)')
 if __name__=='__main__':unittest.main(verbosity=2)

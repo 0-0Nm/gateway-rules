@@ -279,14 +279,16 @@ fun MainScreen(
                     )
                 } else {
                     state.health.forEach { h ->
-                        val color=when(h.state){
-                            "ready"->MaterialTheme.colorScheme.primary
-                            "cooldown"->MaterialTheme.colorScheme.tertiary
-                            "degraded"->MaterialTheme.colorScheme.error
-                            else->MaterialTheme.colorScheme.onSurfaceVariant
-                        }
                         item(
-                            headlineContent = { Text("${h.name} · ${healthStateLabel(h.state)}",color=color) },
+                            headlineContent = {
+                                val color=when(h.state){
+                                    "ready"->MaterialTheme.colorScheme.primary
+                                    "cooldown"->MaterialTheme.colorScheme.tertiary
+                                    "degraded"->MaterialTheme.colorScheme.error
+                                    else->MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                                Text("${h.name} · ${healthStateLabel(h.state)}",color=color)
+                            },
                             supportingContent = {
                                 Column(verticalArrangement=Arrangement.spacedBy(2.dp)){
                                     Text(healthDescription(h))
