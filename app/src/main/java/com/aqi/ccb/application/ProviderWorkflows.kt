@@ -45,7 +45,12 @@ object ProviderWorkflows {
         val previous=current.associateBy{it.modelId}
         return ids.filter{it.isNotBlank()}.distinct().map{previous[it] ?: ModelInfo(it,enabled=false)}
     }
-    fun selectedForTest(models: List<ModelInfo>): List<ModelInfo> = models.filter{it.enabled}.distinctBy{it.modelId}.take(MAX_BATCH_MODELS)
+    // Stop reading once the budget is filled; do not materialize the entire enabled catalog.
+    fun selectedForTest(models: List<ModelInfo>): List<ModelInfo> = models.asSequence()
+        .filter { it.enabled }
+        .distinctBy { it.modelId }
+        .take(MAX_BATCH_MODELS)
+        .toList()
     fun applyCapabilityResult(current: ModelInfo, result: ModelProbe.ProbeResult): ModelInfo {
         val abilities=current.abilities.filter{it!="TOOL"}.toMutableList()
         if(result.toolCall)abilities.add("TOOL")

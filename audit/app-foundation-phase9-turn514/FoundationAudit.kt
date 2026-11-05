@@ -91,6 +91,26 @@ fun main(args:Array<String>){
  }
  test("selected_test_cap_is20_not_every_imported_model"){check(ProviderWorkflows.selectedForTest((1..100).map{ModelInfo("m$it")}).size==20)}
  test("selected_test_deduplicates_ids"){check(ProviderWorkflows.selectedForTest(listOf(ModelInfo("m"),ModelInfo("m"))).size==1)}
+ test("selected_test_stops_reading_after_budget"){
+  var reads=0
+  val models=object:AbstractList<ModelInfo>(){
+   override val size:Int get()=100000
+   override fun get(index:Int):ModelInfo { reads++;return ModelInfo("m$index") }
+  }
+  val selected=ProviderWorkflows.selectedForTest(models)
+  check(selected.map{it.modelId}==(0 until 20).map{"m$it"})
+  check(reads==20){"Expected 20 element reads, got $reads"}
+ }
+ test("selected_test_mixed_catalog_matches_eager_semantics"){
+  val models=(0 until 1000).map{ModelInfo("m${it%37}",enabled=it%3!=0,displayName="row$it")}
+  val expected=models.filter{it.enabled}.distinctBy{it.modelId}.take(20)
+  val actual=ProviderWorkflows.selectedForTest(models)
+  check(actual==expected);check(actual.indices.all{actual[it]===expected[it]})
+ }
+ test("selected_test_empty_and_all_disabled_return_empty"){
+  check(ProviderWorkflows.selectedForTest(emptyList()).isEmpty())
+  check(ProviderWorkflows.selectedForTest((0 until 100).map{ModelInfo("m$it",enabled=false)}).isEmpty())
+ }
  test("successful_capability_probe_does_not_enable_disabled_model"){
   val m=ModelInfo("m",enabled=false);val p=ModelProbe.ProbeResult(true,true,true,10);val r=ProviderWorkflows.applyCapabilityResult(m,p);check(!r.enabled&&r.available==true&&"TOOL" in r.abilities)
  }

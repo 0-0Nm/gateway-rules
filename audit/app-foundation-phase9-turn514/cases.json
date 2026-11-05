@@ -39,5 +39,8 @@
   "MCP_batch_selected20_budget_persists_without_changing_selection",
   "MCP_and_UI_discovery_use_same_disabled_default",
   "MCP_status_build_identity_separate_from_config_and_protocol",
-  "shared_rule_command_enforces_expected_revision_from_UI_shape"
+  "shared_rule_command_enforces_expected_revision_from_UI_shape",
+  "selected_test_stops_reading_after_budget",
+  "selected_test_mixed_catalog_matches_eager_semantics",
+  "selected_test_empty_and_all_disabled_return_empty"
 ]
