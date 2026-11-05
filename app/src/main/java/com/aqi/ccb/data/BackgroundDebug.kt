@@ -122,6 +122,12 @@ internal object BackgroundDebug {
                 val a=provider(id+"-reject","reject");val b=provider(id+"-fallback","fallback");gw.update(listOf(a,b),listOf(rule),revision=1,keys=emptyMap())
                 val n=hits.get();val r=request(port,"/v1/chat/completions",token,body(model.modelId,false));r.code==502 && hits.get()==n+1 && fallbackHits.get()==0
             }
+            test("health_snapshot_scopes_429_provider_cooldown"){
+                val a=provider(id+"-health","reject");gw.update(listOf(a),listOf(rule),revision=2,keys=emptyMap())
+                val r=request(port,"/v1/chat/completions",token,body(model.modelId,false));val h=gw.healthSnapshotPublic().single()
+                r.code==502 && h.providerId==a.id && h.state=="cooldown" && h.kind=="rate_limit" && h.scope=="provider" &&
+                    h.modelId==model.modelId && h.remainingMs>0 && h.retrySafe && h.localImpact=="provider_cooldown"
+            }
             test("real_config_and_gateway_unchanged"){ConfigStore.read(context).revision==before && com.aqi.ccb.gateway.GatewayService.current===real}
             val failed=(0 until cases.length()).count{!cases.getJSONObject(it).getBoolean("passed")}
             return JSONObject().put("ok",failed==0).put("scope","isolated_real_gateway_loopback").put("cases",cases)
@@ -130,7 +136,7 @@ internal object BackgroundDebug {
                 .put("notCovered",JSONArray(listOf("real upstream","Android service start restrictions","UI rendering","long duration")))
         }finally{
             stop.set(true);runCatching{gateway?.stop()};runCatching{upstream?.close()};runCatching{worker?.join(1000)}
-            for(suffix in listOf("","-reject","-fallback"))com.aqi.ccb.gateway.RuntimeState.errorWindow.remove(id+suffix)
+            for(suffix in listOf("","-reject","-fallback","-health"))com.aqi.ccb.gateway.RuntimeState.errorWindow.remove(id+suffix)
             busy.set(false)
         }
     }

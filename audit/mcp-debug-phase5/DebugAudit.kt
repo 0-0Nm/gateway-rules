@@ -134,7 +134,7 @@ fun main(args:Array<String>){
   GateLog.info("test","background-debug-checkpoint");val r=result(rpc(server,"gw_read_log",JSONObject().put("lines",10)));check(r.has("lines")&&r.getJSONArray("lines").toString().contains("background-debug-checkpoint"))
  }
  test("self_test_runs_real_gateway_without_config_change"){
-  val before=ConfigStore.read(ctx).revision;val r=result(rpc(server,"gw_self_test"));check(r.getBoolean("ok")){r.toString()};check(r.getInt("passed")==9&&r.getInt("failed")==0);check(r.getInt("externalRequests")==0&&!r.getBoolean("persistentConfigChanged"));check(ConfigStore.read(ctx).revision==before&&GatewayService.current==null)
+  val before=ConfigStore.read(ctx).revision;val r=result(rpc(server,"gw_self_test"));check(r.getBoolean("ok")){r.toString()};check(r.getInt("passed")==10&&r.getInt("failed")==0);check(r.getInt("externalRequests")==0&&!r.getBoolean("persistentConfigChanged"));check(ConfigStore.read(ctx).revision==before&&GatewayService.current==null)
  }
  test("self_test_no_worker_leak"){
   Thread.sleep(400);check(Thread.getAllStackTraces().keys.none{it.isAlive&&it.name=="gw-selftest-upstream"})
@@ -165,7 +165,7 @@ fun main(args:Array<String>){
   val before=hit.get();val r=result(rpc(server,"gw_probe_request",JSONObject().put("modelId","m").put("confirm",true)));check(!r.getBoolean("ok")&&r.getInt("httpStatus")==502&&hit.get()==before+1&&fallback.get()==0)
  }
  test("runtime_snapshot_has_limits_not_secrets"){
-  val r=result(rpc(server,"gw_debug_snapshot"));check(r.getBoolean("gatewayRunning"));val raw=r.toString();check(r.getJSONObject("runtime").getJSONArray("providers").length()==2);check(!raw.contains(LocalAccessTokens.gateway(ctx))&&!raw.contains("apiKey"))
+  val r=result(rpc(server,"gw_debug_snapshot"));check(r.getBoolean("gatewayRunning"));val raw=r.toString();check(r.getJSONObject("runtime").getJSONArray("providers").length()==2);check(r.getJSONObject("runtime").getJSONArray("health").length()==2);check(!raw.contains(LocalAccessTokens.gateway(ctx))&&!raw.contains("apiKey"))
  }
  }finally{gw.stop();GatewayService.current=null;upstream.stop(0);pool.shutdownNow()}
  test("diagnostic_total_deadline_includes_dripping_headers"){

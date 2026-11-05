@@ -55,8 +55,16 @@ data class VirtualRow(
     val enabled: Boolean,
 )
 
+data class ProviderHealthRow(
+    val providerId:String, val name:String, val state:String, val kind:String="",
+    val scope:String="", val modelId:String="", val remainingSec:Long=0L,
+    val observedAgoSec:Long=-1L, val retrySafe:Boolean=false, val localImpact:String="",
+    val httpStatus:Int?=null,
+)
+
 data class MainUiState(
     val running: Boolean = false,
+    val health: List<ProviderHealthRow> = emptyList(),
     val virtualModels: List<VirtualRow> = emptyList(),
     val floatAlpha: Int = 80,
     val floatLocked: Boolean = false,
@@ -91,6 +99,7 @@ data class ProviderRow(
     val modelCount: Int,
     val rateSummary: String,
     val enabled: Boolean,
+    val healthSummary: String = "",
 )
 
 data class RuleRow(
@@ -261,6 +270,36 @@ fun MainScreen(
                 }
             }
 
+            Spacer(Modifier.height(8.dp))
+            CardGroup(title = { Text("上游健康") }) {
+                if (state.health.isEmpty()) {
+                    item(
+                        headlineContent = { Text(if(state.running)"暂无提供商" else "等待网关启动") },
+                        supportingContent = { Text("健康状态来自实际请求与本地冷却，不读取密钥或提示词正文") },
+                    )
+                } else {
+                    state.health.forEach { h ->
+                        val color=when(h.state){
+                            "ready"->MaterialTheme.colorScheme.primary
+                            "cooldown"->MaterialTheme.colorScheme.tertiary
+                            "degraded"->MaterialTheme.colorScheme.error
+                            else->MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                        item(
+                            headlineContent = { Text("${h.name} · ${healthStateLabel(h.state)}",color=color) },
+                            supportingContent = {
+                                Column(verticalArrangement=Arrangement.spacedBy(2.dp)){
+                                    Text(healthDescription(h))
+                                    if(h.observedAgoSec>=0 && h.state in setOf("cooldown","degraded"))
+                                        Text("最近观察 ${fmtAgo(h.observedAgoSec)}",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            },
+                            trailingContent = { CardGroupValue(when(h.state){"ready"->"●";"cooldown"->"${h.remainingSec}s";"degraded"->"!";"disabled"->"—";else->"○"}) },
+                        )
+                    }
+                }
+            }
+
             // ==================== 连接配置（一键复制）====================
             Spacer(Modifier.height(8.dp))
             CardGroup(title = { Text("连接配置") }) {
@@ -363,7 +402,10 @@ fun MainScreen(
                                 Text("${p.name}${if (p.enabled) "" else "（已禁用）"}")
                             },
                             supportingContent = {
-                                Text("${p.modelCount} 个模型 · ${p.rateSummary}")
+                                Column(verticalArrangement=Arrangement.spacedBy(2.dp)){
+                                    Text("${p.modelCount} 个模型 · ${p.rateSummary}")
+                                    if(p.healthSummary.isNotBlank())Text(p.healthSummary,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             },
                             trailingContent = { Text("›", style = MaterialTheme.typography.titleLarge) },
                         )
@@ -468,7 +510,25 @@ fun MainScreen(
     }
 }
 
-/** 监控面板的单行指标：左标签右值 */
+/** 上游健康状态的纯展示转换。 */
+private fun healthStateLabel(v:String)=when(v){"ready"->"可用";"cooldown"->"冷却中";"degraded"->"异常";"disabled"->"已禁用";else->"未运行"}
+private fun healthKindLabel(v:String)=when(v){
+    "rate_limit"->"上游限流";"credit_exhausted"->"余额或额度不足";"auth_rejected"->"认证被拒";
+    "access_rejected"->"访问被拒";"model_or_route_missing"->"模型或路由不存在";
+    "upstream_timeout"->"上游超时";"upstream_unavailable"->"上游暂不可用";
+    "upstream_failure"->"上游故障";"connectivity"->"连接失败";
+    "ambiguous_transport"->"发送后连接中断";else->if(v.isBlank())"无异常" else v
+}
+private fun healthScopeLabel(v:String)=when(v){"provider"->"整个提供商";"credential"->"当前凭据";"provider_model"->"当前模型路由";"attempt"->"本次尝试";else->"未分类"}
+private fun healthImpactLabel(v:String)=when(v){"provider_cooldown"->"本地整家冷却";"attempt_failover"->"允许切换候选";"request_stopped"->"本请求停止";else->"无本地限制"}
+private fun healthDescription(h:ProviderHealthRow):String=when(h.state){
+    "ready"->"最近没有影响健康的错误"
+    "stopped"->"启动网关后开始观察实际请求"
+    "disabled"->"配置已禁用，不参与选路"
+    else->buildString{append(healthKindLabel(h.kind));append(" · ");append(healthScopeLabel(h.scope));append(" · ");append(healthImpactLabel(h.localImpact));if(h.modelId.isNotBlank())append(" · "+h.modelId);h.httpStatus?.let{append(" · HTTP "+it)};if(!h.retrySafe)append(" · 不自动重放")}
+}
+private fun fmtAgo(sec:Long):String=when{sec<60->"${sec}s前";sec<3600->"${sec/60}分钟前";else->"${sec/3600}小时前"}
+
 @Composable
 private fun MonitorRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth()) {

@@ -42,5 +42,12 @@
   "shared_rule_command_enforces_expected_revision_from_UI_shape",
   "selected_test_stops_reading_after_budget",
   "selected_test_mixed_catalog_matches_eager_semantics",
-  "selected_test_empty_and_all_disabled_return_empty"
+  "selected_test_empty_and_all_disabled_return_empty",
+  "health_429_cooldown_is_provider_scoped",
+  "health_429_without_cooldown_is_attempt_failover",
+  "health_503_is_model_scoped_and_retry_safe",
+  "health_sent_transport_is_ambiguous_and_not_retry_safe",
+  "health_newer_failure_survives_older_success",
+  "health_newer_success_clears_prior_failure",
+  "health_snapshot_only_returns_current_providers"
 ]

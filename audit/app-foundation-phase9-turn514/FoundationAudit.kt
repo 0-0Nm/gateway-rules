@@ -111,6 +111,27 @@ fun main(args:Array<String>){
   check(ProviderWorkflows.selectedForTest(emptyList()).isEmpty())
   check(ProviderWorkflows.selectedForTest((0 until 100).map{ModelInfo("m$it",enabled=false)}).isEmpty())
  }
+ test("health_429_cooldown_is_provider_scoped"){
+  val policy=RatePolicy(ratePerMin=0.0,minIntervalMs=0.0,jitterMs=0.0,maxInflight=1,softRateSec=2.0,softRateMaxSec=2.0);val p=Provider("p","P","http://127.0.0.1",ratePolicy=policy,models=mapOf("m" to Model("m")));val l=RateLimiter(mapOf("p" to policy));val h=ProviderHealthRegistry();l.noteSoftRateLimit("p");h.noteHttp("p","m",429,l.softRestSnapshot("p").untilMs);val s=h.snapshots(listOf(p),l).single();check(s.state=="cooldown"&&s.scope=="provider"&&s.localImpact=="provider_cooldown"&&s.remainingMs>0&&s.retrySafe)
+ }
+ test("health_429_without_cooldown_is_attempt_failover"){
+  var now=1000L;val p=Provider("p","P","http://127.0.0.1");val h=ProviderHealthRegistry({now});h.noteHttp("p","m",429,0L);val s=h.snapshots(listOf(p),RateLimiter(mapOf("p" to p.ratePolicy))).single();check(s.state=="degraded"&&s.scope=="provider_model"&&s.localImpact=="attempt_failover"&&s.remainingMs==0L&&s.retrySafe)
+ }
+ test("health_503_is_model_scoped_and_retry_safe"){
+  val p=Provider("p","P","http://127.0.0.1",models=mapOf("m" to Model("m")));val l=RateLimiter(mapOf("p" to p.ratePolicy));val h=ProviderHealthRegistry();h.noteHttp("p","m",503);val s=h.snapshots(listOf(p),l).single();check(s.state=="degraded"&&s.kind=="upstream_unavailable"&&s.scope=="provider_model"&&s.localImpact=="attempt_failover"&&s.retrySafe)
+ }
+ test("health_sent_transport_is_ambiguous_and_not_retry_safe"){
+  val p=Provider("p","P","http://127.0.0.1");val h=ProviderHealthRegistry();h.noteTransport("p","m",true,"SocketException:secret");val s=h.snapshots(listOf(p),RateLimiter(mapOf("p" to p.ratePolicy))).single();check(s.kind=="ambiguous_transport"&&s.scope=="attempt"&&!s.retrySafe&&s.detail=="SocketExceptionsecret")
+ }
+ test("health_newer_failure_survives_older_success"){
+  var now=1000L;val p=Provider("p","P","http://127.0.0.1");val h=ProviderHealthRegistry({now});now=1200;h.noteHttp("p","m",503);now=1300;h.noteSuccess("p",1100);check(h.snapshots(listOf(p),RateLimiter(mapOf("p" to p.ratePolicy))).single().state=="degraded")
+ }
+ test("health_newer_success_clears_prior_failure"){
+  var now=1000L;val p=Provider("p","P","http://127.0.0.1");val h=ProviderHealthRegistry({now});h.noteHttp("p","m",503);now=1200;h.noteSuccess("p",1100);check(h.snapshots(listOf(p),RateLimiter(mapOf("p" to p.ratePolicy))).single().state=="ready")
+ }
+ test("health_snapshot_only_returns_current_providers"){
+  val a=Provider("a","A","http://127.0.0.1");val b=Provider("b","B","http://127.0.0.1");val h=ProviderHealthRegistry();h.noteHttp("a","m",503);check(h.snapshots(listOf(b),RateLimiter(mapOf("b" to b.ratePolicy))).map{it.providerId}==listOf("b"))
+ }
  test("successful_capability_probe_does_not_enable_disabled_model"){
   val m=ModelInfo("m",enabled=false);val p=ModelProbe.ProbeResult(true,true,true,10);val r=ProviderWorkflows.applyCapabilityResult(m,p);check(!r.enabled&&r.available==true&&"TOOL" in r.abilities)
  }

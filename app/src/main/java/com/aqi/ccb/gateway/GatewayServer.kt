@@ -9,8 +9,103 @@ import java.net.Socket
 import java.net.URL
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+
+enum class HealthFailureKind(val wire:String) {
+    RATE_LIMIT("rate_limit"), CREDIT_EXHAUSTED("credit_exhausted"),
+    AUTH_REJECTED("auth_rejected"), ACCESS_REJECTED("access_rejected"),
+    MODEL_OR_ROUTE_MISSING("model_or_route_missing"), UPSTREAM_TIMEOUT("upstream_timeout"),
+    UPSTREAM_UNAVAILABLE("upstream_unavailable"), UPSTREAM_FAILURE("upstream_failure"),
+    CONNECTIVITY("connectivity"), AMBIGUOUS_TRANSPORT("ambiguous_transport")
+}
+enum class HealthFailureScope(val wire:String) { PROVIDER("provider"), CREDENTIAL("credential"), PROVIDER_MODEL("provider_model"), ATTEMPT("attempt") }
+enum class HealthLocalImpact(val wire:String) { PROVIDER_COOLDOWN("provider_cooldown"), ATTEMPT_FAILOVER("attempt_failover"), REQUEST_STOPPED("request_stopped") }
+
+data class ProviderHealthSnapshot(
+    val providerId:String, val providerName:String, val enabled:Boolean, val state:String,
+    val kind:String?=null, val scope:String?=null, val modelId:String?=null,
+    val httpStatus:Int?=null, val observedAtMs:Long=0L, val retryAtMs:Long=0L,
+    val remainingMs:Long=0L, val retrySafe:Boolean=false, val localImpact:String?=null,
+    val source:String?=null, val detail:String?=null,
+) {
+    fun json():org.json.JSONObject=org.json.JSONObject()
+        .put("providerId",providerId).put("providerName",providerName).put("enabled",enabled).put("state",state)
+        .put("kind",kind?:org.json.JSONObject.NULL).put("scope",scope?:org.json.JSONObject.NULL)
+        .put("modelId",modelId?:org.json.JSONObject.NULL).put("httpStatus",httpStatus?:org.json.JSONObject.NULL)
+        .put("observedAtMs",observedAtMs).put("retryAtMs",retryAtMs).put("remainingMs",remainingMs)
+        .put("retrySafe",retrySafe).put("localImpact",localImpact?:org.json.JSONObject.NULL)
+        .put("source",source?:org.json.JSONObject.NULL).put("detail",detail?:org.json.JSONObject.NULL)
+}
+
+private data class ProviderHealthEvent(
+    val kind:HealthFailureKind, val scope:HealthFailureScope, val modelId:String, val httpStatus:Int?,
+    val observedAtMs:Long, val retryAtMs:Long, val retrySafe:Boolean,
+    val localImpact:HealthLocalImpact, val source:String, val detail:String,
+)
+private data class ProviderHealthClass(
+    val kind:HealthFailureKind, val scope:HealthFailureScope,
+    val retrySafe:Boolean, val impact:HealthLocalImpact,
+)
+
+/** Runtime-only health evidence. It never stores response bodies, prompts or credential values. */
+class ProviderHealthRegistry(
+    private val clockMs:()->Long={System.currentTimeMillis()},
+    private val retentionMs:Long=30L*60*1000,
+) {
+    init { require(retentionMs>=0) }
+    private val events=ConcurrentHashMap<String,ProviderHealthEvent>()
+    private fun classify(status:Int):ProviderHealthClass?=when(status) {
+        401->ProviderHealthClass(HealthFailureKind.AUTH_REJECTED,HealthFailureScope.CREDENTIAL,false,HealthLocalImpact.REQUEST_STOPPED)
+        402->ProviderHealthClass(HealthFailureKind.CREDIT_EXHAUSTED,HealthFailureScope.CREDENTIAL,false,HealthLocalImpact.REQUEST_STOPPED)
+        403->ProviderHealthClass(HealthFailureKind.ACCESS_REJECTED,HealthFailureScope.PROVIDER_MODEL,false,HealthLocalImpact.REQUEST_STOPPED)
+        404->ProviderHealthClass(HealthFailureKind.MODEL_OR_ROUTE_MISSING,HealthFailureScope.PROVIDER_MODEL,false,HealthLocalImpact.REQUEST_STOPPED)
+        408->ProviderHealthClass(HealthFailureKind.UPSTREAM_TIMEOUT,HealthFailureScope.PROVIDER,false,HealthLocalImpact.REQUEST_STOPPED)
+        429->ProviderHealthClass(HealthFailureKind.RATE_LIMIT,HealthFailureScope.PROVIDER,true,HealthLocalImpact.PROVIDER_COOLDOWN)
+        503->ProviderHealthClass(HealthFailureKind.UPSTREAM_UNAVAILABLE,HealthFailureScope.PROVIDER_MODEL,true,HealthLocalImpact.ATTEMPT_FAILOVER)
+        in 500..599->ProviderHealthClass(HealthFailureKind.UPSTREAM_FAILURE,HealthFailureScope.PROVIDER,false,HealthLocalImpact.REQUEST_STOPPED)
+        else->null
+    }
+    fun noteHttp(providerId:String,modelId:String,status:Int,retryAtMs:Long=0L) {
+        if(providerId.isBlank())return
+        val c=classify(status)?:return
+        val now=clockMs();val retryAt=retryAtMs.coerceAtLeast(0)
+        val hasCooldown=status==429 && retryAt>now
+        val scope=if(status==429 && !hasCooldown)HealthFailureScope.PROVIDER_MODEL else c.scope
+        val impact=if(status==429 && !hasCooldown)HealthLocalImpact.ATTEMPT_FAILOVER else c.impact
+        events[providerId]=ProviderHealthEvent(c.kind,scope,modelId,status,now,retryAt,c.retrySafe,impact,"http","http_$status")
+    }
+    fun noteTransport(providerId:String,modelId:String,sent:Boolean,errorClass:String) {
+        if(providerId.isBlank())return
+        val clean=errorClass.filter{it.isLetterOrDigit()||it=='_'}.take(80).ifBlank{"transport_error"}
+        events[providerId]=ProviderHealthEvent(
+            if(sent)HealthFailureKind.AMBIGUOUS_TRANSPORT else HealthFailureKind.CONNECTIVITY,
+            if(sent)HealthFailureScope.ATTEMPT else HealthFailureScope.PROVIDER,modelId,null,clockMs(),0L,!sent,
+            if(sent)HealthLocalImpact.REQUEST_STOPPED else HealthLocalImpact.ATTEMPT_FAILOVER,"transport",clean)
+    }
+    fun noteSuccess(providerId:String,requestStartedAtMs:Long) {
+        val now=clockMs()
+        events.computeIfPresent(providerId){_,e->if(e.observedAtMs<=requestStartedAtMs && e.retryAtMs<=now)null else e}
+    }
+    fun clear(){events.clear()}
+    fun snapshots(providers:List<Provider>,limiter:RateLimiter):List<ProviderHealthSnapshot> {
+        val now=clockMs();val ids=providers.map{it.id}.toSet()
+        events.forEach{(id,e)->if(id !in ids || e.retryAtMs<=now && now-e.observedAtMs>retentionMs)events.remove(id,e)}
+        return providers.map{p->
+            val rest=limiter.softRestSnapshot(p.id);val e=events[p.id]
+            val state=when{!p.enabled->"disabled";rest.remainingMs>0->"cooldown";e!=null->"degraded";else->"ready"}
+            val retryAt=maxOf(rest.untilMs,e?.retryAtMs?:0L)
+            ProviderHealthSnapshot(p.id,p.name,p.enabled,state,
+                if(rest.remainingMs>0)e?.kind?.wire?:HealthFailureKind.RATE_LIMIT.wire else e?.kind?.wire,
+                if(rest.remainingMs>0)e?.scope?.wire?:HealthFailureScope.PROVIDER.wire else e?.scope?.wire,
+                e?.modelId,e?.httpStatus,e?.observedAtMs?:0L,retryAt,
+                maxOf(rest.remainingMs,(retryAt-now).coerceAtLeast(0)),e?.retrySafe?:false,
+                if(rest.remainingMs>0)HealthLocalImpact.PROVIDER_COOLDOWN.wire else e?.localImpact?.wire,
+                e?.source,e?.detail)
+        }
+    }
+}
 
 /**
  * 本地 OpenAI 兼容网关。
@@ -44,6 +139,7 @@ class GatewayServer(
     private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
     private val activeRequests = java.util.concurrent.ConcurrentHashMap.newKeySet<RequestRun>()
     private val requestVisual = RequestVisualState(onChanged = onVisualStateChanged)
+    private val health = ProviderHealthRegistry()
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
@@ -177,6 +273,10 @@ class GatewayServer(
     fun isRunning(): Boolean = running.get()
     fun listeningPortPublic(): Int = serverSocket?.localPort ?: 0
     fun requestVisualStatePublic(): RequestVisualState.Snapshot = requestVisual.snapshot()
+    fun healthSnapshotPublic():List<ProviderHealthSnapshot> {
+        val cfg=synchronized(this){live}
+        return health.snapshots(cfg.providers,limiter)
+    }
     fun debugSnapshot(): org.json.JSONObject {
         val cfg=synchronized(this){live}
         return org.json.JSONObject().put("running",isRunning()).put("boundPort",listeningPortPublic())
@@ -184,6 +284,7 @@ class GatewayServer(
             .put("ok",totalOk).put("fail",totalFail).put("localRejects",localRejects).put("clientDisconnects",clientDisconnects)
             .put("inflight",inflightPublic()).put("workers",workerCountPublic()).put("connections",tcpConnectionsPublic())
             .put("visualState",org.json.JSONObject(requestVisualStatePublic().asMap()))
+            .put("health",org.json.JSONArray(healthSnapshotPublic().map{it.json()}))
             .put("uptimeSec",uptimeSecPublic()).put("providers",org.json.JSONArray(cfg.providers.map { p ->
                 org.json.JSONObject().put("id",p.id).put("enabled",p.enabled).put("errors",p.errors).put("breaker",p.breaker.name)
                     .put("openUntilMs",p.openUntilMs).put("rate",org.json.JSONObject(limiter.peek(p.id)))
@@ -332,6 +433,7 @@ class GatewayServer(
     /** One request owns its connection, commit boundary and terminal record. */
     private class RequestRun(val reqId: String, val attemptLimit: Int = Int.MAX_VALUE) {
         val started = System.nanoTime()
+        val startedAtMs = System.currentTimeMillis()
         val owner = Thread.currentThread()
         val upstream = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>()
         @Volatile var finished = false
@@ -533,6 +635,7 @@ class GatewayServer(
                         c.p.lastUsedMs = System.currentTimeMillis()
                     }
                     limiter.noteSuccess(c.p.id, permit.cooldownGeneration)
+                    health.noteSuccess(c.p.id,run.startedAtMs)
                     latestRoute = c.m.modelId + "@" + c.p.id
                     SwitchPolicy.onSuccess(rule.switchGranularity, ctx.sessionId, ctx.turnIndex, c.p.id)
                     GateLog.attempt(run.reqId, c.p.id, modelId, true, latency, code, null)
@@ -546,6 +649,7 @@ class GatewayServer(
                     val seconds = limiter.noteSoftRateLimit(c.p.id)
                     synchronized(c.p) { c.p.breaker = BreakerState.OPEN; c.p.openUntilMs = System.currentTimeMillis() + (seconds * 1000).toLong() }
                 }
+                health.noteHttp(c.p.id,c.m.modelId,code,if(code==429)limiter.softRestSnapshot(c.p.id).untilMs else 0L)
                 GateLog.attempt(run.reqId, c.p.id, modelId, false, (System.nanoTime() - at) / 1_000_000.0, code, lastError)
                 // Only explicit rejection/unavailability permits first-policy failover.
                 // Transport failures after dispatch (ambiguous billing) NEVER retry.
@@ -562,6 +666,7 @@ class GatewayServer(
                 synchronized(c.p) { c.p.errors++ }
                 RuntimeState.noteError(c.p.id)
                 lastError = e.javaClass.simpleName
+                health.noteTransport(c.p.id,c.m.modelId,run.sent||run.committed,lastError)
                 GateLog.attempt(run.reqId, c.p.id, modelId, false, (System.nanoTime() - at) / 1_000_000.0, code, lastError)
                 if (run.sent || run.committed) break
             } finally {

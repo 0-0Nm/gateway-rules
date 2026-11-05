@@ -56,6 +56,12 @@ data class RatePolicy(
 
 /** A permit owns one in-flight slot, and remembers the cooldown generation at admission. */
 data class Permit(val ok: Boolean, val waitMs: Double, val reason: String, val cooldownGeneration: Long = 0)
+data class SoftRestSnapshot(
+    val untilMs: Long,
+    val remainingMs: Long,
+    val streak: Int,
+    val generation: Long,
+)
 private class Bucket(p: RatePolicy) {
     var tokens=p.burst.toDouble()
     var lastRefill=System.nanoTime()
@@ -132,6 +138,11 @@ class RateLimiter(policies: Map<String,RatePolicy> = emptyMap(),private val defa
         if(generation!=null && generation!=b.cooldownGeneration)return
         if(b.softUntilMs>System.currentTimeMillis())return
         b.softStreak=0;b.softUntilMs=0
+    }
+    @Synchronized fun softRestSnapshot(id:String):SoftRestSnapshot {
+        val b=buckets[id]?:return SoftRestSnapshot(0L,0L,0,0L)
+        val now=System.currentTimeMillis()
+        return SoftRestSnapshot(b.softUntilMs,(b.softUntilMs-now).coerceAtLeast(0),b.softStreak,b.cooldownGeneration)
     }
     @Synchronized fun softRestRemainingSec(id:String):Long =
         ((buckets[id]?.softUntilMs?:0L)-System.currentTimeMillis()).coerceAtLeast(0)/1000

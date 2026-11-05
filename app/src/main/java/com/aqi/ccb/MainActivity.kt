@@ -48,6 +48,7 @@ import com.aqi.ccb.ui.MainScreen
 import com.aqi.ccb.ui.MainUiState
 import com.aqi.ccb.ui.ProviderEditScreen
 import com.aqi.ccb.ui.ProviderRow
+import com.aqi.ccb.ui.ProviderHealthRow
 import com.aqi.ccb.ui.RuleDraft
 import com.aqi.ccb.ui.RuleEditScreen
 import com.aqi.ccb.ui.RuleRow
@@ -701,6 +702,18 @@ class MainActivity : ComponentActivity() {
     private fun refreshMainChecked() {
         val drafts = ProviderRepo.list(this)
         val ruleJsons = ConfigStore.loadRules(this)
+        val s = server
+        val runningNow=s?.isRunning()==true
+        val now = System.currentTimeMillis()
+        val healthSnapshots=if(runningNow)s!!.healthSnapshotPublic() else emptyList()
+        val healthById=healthSnapshots.associateBy{it.providerId}
+        fun kindLabel(v:String?)=when(v){"rate_limit"->"限流";"credit_exhausted"->"额度不足";"auth_rejected"->"认证失败";"access_rejected"->"访问拒绝";"model_or_route_missing"->"模型/路由缺失";"upstream_timeout"->"上游超时";"upstream_unavailable"->"上游不可用";"upstream_failure"->"上游故障";"connectivity"->"连接失败";"ambiguous_transport"->"发送后中断";else->"异常"}
+        fun summary(id:String,enabled:Boolean):String {
+            if(!enabled)return "健康：已禁用"
+            if(!runningNow)return "健康：未运行"
+            val h=healthById[id]?:return "健康：等待运行态"
+            return when(h.state){"ready"->"健康：可用";"cooldown"->"健康：冷却 ${(h.remainingMs+999)/1000}s · ${kindLabel(h.kind)}";"degraded"->"健康：${kindLabel(h.kind)}";else->"健康：${h.state}"}
+        }
 
         val rows = drafts.mapIndexed { i, d ->
             ProviderRow(
@@ -711,6 +724,7 @@ class MainActivity : ComponentActivity() {
                 modelCount = d.modelId.split(',', ' ').count { it.isNotBlank() },
                 rateSummary = "${d.ratePerMin}/min · gap ${d.minIntervalMs}ms",
                 enabled = d.enabled,
+                healthSummary = summary(d.idOr(),d.enabled),
             )
         }
         val ruleRows = ruleJsons.map { o ->
@@ -732,12 +746,17 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        val s = server
+        val healthRows=if(!runningNow)drafts.map{d->ProviderHealthRow(d.idOr(),d.name.ifBlank{d.idOr()},if(d.enabled)"stopped" else "disabled")}else healthSnapshots.map{h->
+            ProviderHealthRow(h.providerId,h.providerName,h.state,h.kind.orEmpty(),h.scope.orEmpty(),h.modelId.orEmpty(),
+                (h.remainingMs+999)/1000,if(h.observedAtMs>0)(now-h.observedAtMs).coerceAtLeast(0)/1000 else -1,
+                h.retrySafe,h.localImpact.orEmpty(),h.httpStatus)
+        }
         // 诊断数据：直接把 GatewayServer 的运行时指标搬进 UI 状态
         val diagPath = s?.pathDiagnosisPublic() ?: "未启动"
         val diagLan = s?.lanHintPublic() ?: ""
         mainState = mainState.copy(
             virtualModels = vmRows,
+            health = healthRows,
             diagPath = diagPath,
             diagBind = s?.actualBind ?: "",
             diagAcceptAlive = s?.acceptAlivePublic() == true,

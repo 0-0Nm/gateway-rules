@@ -66,4 +66,11 @@ class AppContract(unittest.TestCase):
  def test_build_identity_guard_rejects_direct_Text_in_DSL(self):
   bad='CardGroup(title = { Text("版本与构建") }) {\n                Text("A")\n                Text("B")\n                Text("C")\n            }\n// ---------- 界面 ----------'
   self.assertFalse(build_identity_rows_use_slots(bad))
+ def test_health_snapshot_is_shared_by_UI_and_MCP(self):
+  activity=(ROOT/'app/src/main/java/com/aqi/ccb/MainActivity.kt').read_text();screen=(ROOT/'app/src/main/java/com/aqi/ccb/ui/MainScreen.kt').read_text();server=(ROOT/'app/src/main/java/com/aqi/ccb/gateway/GatewayServer.kt').read_text();bridge=(ROOT/'app/src/main/java/com/aqi/ccb/data/McpBridge.kt').read_text()
+  self.assertIn('healthSnapshotPublic()',activity);self.assertIn('Text("上游健康")',screen);self.assertIn('.put("health"',server);self.assertIn('gw?.debugSnapshot()',bridge)
+ def test_health_diagnostics_do_not_expand_retry_boundary(self):
+  s=(ROOT/'app/src/main/java/com/aqi/ccb/gateway/GatewayServer.kt').read_text();self.assertIn('if (code !in setOf(429, 503)) break',s);self.assertIn('if (run.sent || run.committed) break',s);self.assertIn('health.noteTransport',s)
+ def test_health_UI_exposes_scope_impact_and_countdown(self):
+  s=(ROOT/'app/src/main/java/com/aqi/ccb/ui/MainScreen.kt').read_text();self.assertIn('healthScopeLabel',s);self.assertIn('healthImpactLabel',s);self.assertIn('h.remainingSec',s);self.assertIn('不自动重放',s)
 if __name__=='__main__':unittest.main(verbosity=2)
