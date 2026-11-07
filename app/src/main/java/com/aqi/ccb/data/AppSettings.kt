@@ -14,6 +14,7 @@ object AppSettings {
     // MCP
     const val KEY_MCP_ENABLED = "mcp_enabled"
     const val KEY_MCP_PORT = "mcp_port"
+    const val KEY_MCP_CLIENT_NAME = "mcp_client_name"
     // 网关
     const val KEY_GATEWAY_PORT = "gateway_port"
     // 提示弹窗
@@ -51,6 +52,17 @@ object AppSettings {
         prefs(context).edit().putInt(KEY_MCP_PORT, p).apply()
     }
 
+    /** Client configuration alias only; never changes the MCP serverInfo name or listener. */
+    fun mcpClientName(context: Context): String {
+        val saved = prefs(context).getString(KEY_MCP_CLIENT_NAME, null)
+        return saved?.takeIf { McpClientConfig.nameError(it) == null } ?: McpClientConfig.DEFAULT_NAME
+    }
+
+    fun setMcpClientName(context: Context, value: String) {
+        McpClientConfig.validateName(value)
+        check(prefs(context).edit().putString(KEY_MCP_CLIENT_NAME, value).commit()) { "Cannot save MCP client name" }
+    }
+
     fun gatewayPort(context: Context): Int =
         prefs(context).getInt(KEY_GATEWAY_PORT, DEFAULT_GATEWAY_PORT)
 
@@ -72,4 +84,31 @@ object AppSettings {
 
     fun setToastEnabled(context: Context, v: Boolean) =
         prefs(context).edit().putBoolean(KEY_TOAST_ENABLED, v).apply()
+}
+
+/** Conservative export identifier: ASCII alphanumeric, leading letter, no client-specific punctuation. */
+object McpClientConfig {
+    const val DEFAULT_NAME = "gatewayrules"
+    const val MAX_NAME_LENGTH = 64
+    private val NAME = Regex("[A-Za-z][A-Za-z0-9]{0,63}")
+    fun nameError(value: String): String? = when {
+        value.isEmpty() -> "请填写 MCP 名称"
+        value.length > MAX_NAME_LENGTH -> "名称最多 64 个字符"
+        value.first() !in 'A'..'Z' && value.first() !in 'a'..'z' -> "必须以英文字母开头"
+        !NAME.matches(value) -> "只允许英文字母和数字，不含空格或特殊符号"
+        else -> null
+    }
+    fun validateName(value: String): String {
+        require(nameError(value) == null) { "Invalid MCP client name" }
+        return value
+    }
+    fun json(name: String, port: Int, token: String): String {
+        val checkedName = validateName(name)
+        require(port in 1024..65535) { "Invalid MCP port" }
+        require(token.isNotBlank() && token.none { it < ' ' || it == 127.toChar() }) { "Invalid MCP token" }
+        return org.json.JSONObject().put("mcpServers", org.json.JSONObject().put(checkedName,
+            org.json.JSONObject().put("type", "http").put("url", "http://127.0.0.1:$port/mcp")
+                .put("headers", org.json.JSONObject().put("Authorization", "Bearer " + token))
+        )).toString(2)
+    }
 }

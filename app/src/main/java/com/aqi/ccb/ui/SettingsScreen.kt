@@ -29,6 +29,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.aqi.ccb.data.McpClientConfig
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -80,6 +82,7 @@ data class SettingsState(
     val permAutostartStatus: String = "DENIED",
     /** 用户是否曾前往自启动设置页 */
     val permAutostartVisited: Boolean = false,
+    val mcpClientName: String = McpClientConfig.DEFAULT_NAME,
 ) {
     /** 地址用实际生效端口，避免显示未应用的草稿值 */
     val mcpUrl: String
@@ -111,8 +114,45 @@ fun SettingsScreen(
     onRequestAllPerms: (() -> Unit)? = null,
     onOpenAutoStart: (() -> Unit)? = null,
     freezeProneRom: Boolean = false,
+    onMcpNameSave: ((String) -> Boolean)? = null,
 ) {
     var confirmLan by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var showMcpName by rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    var mcpNameDraft by rememberSaveable { androidx.compose.runtime.mutableStateOf(state.mcpClientName) }
+    var mcpNameSaveError by rememberSaveable { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    if (showMcpName) {
+        val validationError = McpClientConfig.nameError(mcpNameDraft)
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showMcpName = false },
+            title = { Text("自定义 MCP 名称") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("用于配置 JSON 的 mcpServers 键。只改变客户端名称，不重启服务；已导入的配置需重新复制导入。")
+                    OutlinedTextField(
+                        value = mcpNameDraft,
+                        onValueChange = { mcpNameDraft = it; mcpNameSaveError = null },
+                        label = { Text("MCP 名称") },
+                        singleLine = true,
+                        isError = validationError != null || mcpNameSaveError != null,
+                        supportingText = { Text(mcpNameSaveError ?: validationError ?: "1–64 位英文字母或数字，以字母开头") },
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                    )
+                    TextButton(onClick = { mcpNameDraft = McpClientConfig.DEFAULT_NAME; mcpNameSaveError = null }) { Text("恢复默认") }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = validationError == null && onMcpNameSave != null,
+                    onClick = {
+                        if (onMcpNameSave?.invoke(mcpNameDraft) == true) showMcpName = false
+                        else mcpNameSaveError = "保存失败，保留原名称，请重试"
+                    },
+                ) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { showMcpName = false }) { Text("取消") } },
+        )
+    }
     if (confirmLan) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { confirmLan = false },
@@ -274,6 +314,17 @@ fun SettingsScreen(
                                 MaterialTheme.colorScheme.primaryContainer
                             else MaterialTheme.colorScheme.surfaceContainerHighest,
                         )
+                    },
+                )
+
+                item(
+                    headlineContent = { Text("配置中的 MCP 名称") },
+                    supportingContent = { Text("${state.mcpClientName} · 导出使用此名称，默认不含特殊符号") },
+                    trailingContent = {
+                        OutlinedButton(
+                            enabled = onMcpNameSave != null,
+                            onClick = { mcpNameDraft = state.mcpClientName; mcpNameSaveError = null; showMcpName = true },
+                        ) { Text("MCP 命名") }
                     },
                 )
 

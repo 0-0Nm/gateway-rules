@@ -151,6 +151,7 @@ class MainActivity : ComponentActivity() {
             floatEnabled = AppSettings.floatEnabled(this),
             mcpEnabled = AppSettings.mcpEnabled(this),
             mcpPort = AppSettings.mcpPort(this).toString(),
+            mcpClientName = AppSettings.mcpClientName(this),
             toastEnabled = AppSettings.toastEnabled(this),
         )
         mainState = mainState.copy(port = AppSettings.gatewayPort(this).toString())
@@ -438,14 +439,20 @@ class MainActivity : ComponentActivity() {
                             AppSettings.setToastEnabled(this, v)
                         },
                         onBack = { route = "main"; refreshMain() },
+                        onMcpNameSave = { name ->
+                            try {
+                                AppSettings.setMcpClientName(this, name)
+                                settingsState = settingsState.copy(mcpClientName = name)
+                                com.aqi.ccb.ui.UiToast.show("MCP 名称已保存；复制配置 JSON 后重新导入客户端")
+                                true
+                            } catch (_: Exception) { false }
+                        },
                         onMcpCopyRaw = {
                             val actualPort = McpService.current?.port ?: AppSettings.mcpPort(this)
-                            val cfg = JSONObject().put("mcpServers", JSONObject().put("gateway-rules",
-                                JSONObject().put("type", "http")
-                                    .put("url", "http://127.0.0.1:$actualPort/mcp")
-                                    .put("headers", JSONObject().put("Authorization",
-                                        "Bearer " + com.aqi.ccb.gateway.LocalAccessTokens.mcp(this)))
-                            )).toString(2)
+                            val cfg = com.aqi.ccb.data.McpClientConfig.json(
+                                settingsState.mcpClientName, actualPort,
+                                com.aqi.ccb.gateway.LocalAccessTokens.mcp(this),
+                            )
                             val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                                 as android.content.ClipboardManager
                             val clip = android.content.ClipData.newPlainText("mcp", cfg)
