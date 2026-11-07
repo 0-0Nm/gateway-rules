@@ -47,6 +47,8 @@ data class ModelInfo(
     /** null=unknown; explicit zero=free. Both prices must be known to compare. */
     val priceInPerM: Double? = null,
     val priceOutPerM: Double? = null,
+    val priceCurrency: String? = null,
+    val priceCachedInPerM: Double? = null,
 ) {
     val hasPrice: Boolean get() = ModelPricing.known(priceInPerM, priceOutPerM)
     val blendedPrice: Double get() = ModelPricing.blended(priceInPerM, priceOutPerM)
@@ -74,6 +76,8 @@ data class ModelInfo(
         put("priceVersion", ModelPricing.VERSION)
         put("priceInPerM", priceInPerM ?: JSONObject.NULL)
         put("priceOutPerM", priceOutPerM ?: JSONObject.NULL)
+        put("priceCurrency", priceCurrency ?: JSONObject.NULL)
+        put("priceCachedInPerM", priceCachedInPerM ?: JSONObject.NULL)
         nonStreaming?.let { put("nonStreaming", it) }
         streaming?.let { put("streaming", it) }
         toolCall?.let { put("toolCall", it) }
@@ -110,6 +114,8 @@ data class ModelInfo(
             } ?: emptyList(),
             priceInPerM = pricing.first,
             priceOutPerM = pricing.second,
+            priceCurrency = ModelPricing.currency(o.opt("priceCurrency")),
+            priceCachedInPerM = ModelPricing.cachedPrice(o.opt("priceCachedInPerM")),
         )
         }
     }

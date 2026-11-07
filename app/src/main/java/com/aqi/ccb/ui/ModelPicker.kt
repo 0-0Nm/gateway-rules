@@ -189,7 +189,7 @@ private fun PickerRow(
                 if (model.abilities.contains("TOOL")) Tag("工具")
                 if (model.abilities.contains("REASONING")) Tag("推理")
                 if (model.abilities.isEmpty()) Tag("未探测", dim = true)
-                if (model.hasPrice) Tag("¥" + fmtPrice(model.blendedPrice))
+                if (model.hasPrice) Tag((model.priceCurrency ?: "币种未设") + " " + fmtPrice(model.blendedPrice))
             }
         }
     }

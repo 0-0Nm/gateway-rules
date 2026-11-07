@@ -462,7 +462,7 @@ internal fun ModelRow(
                             append(" · ").append(model.contextLength / 1000).append("K")
                         }
                         if (model.hasPrice) {
-                            append(" · ¥").append(fmtPrice(model.blendedPrice))
+                            append(" · ").append(model.priceCurrency ?: "币种未设").append(" ").append(fmtPrice(model.blendedPrice))
                         }
                         if (model.lastError.isNotEmpty()) {
                             append(" · ").append(model.lastError.take(20))
@@ -528,19 +528,36 @@ internal fun ModelRow(
                             onUpdate(model.copy(contextLength = it.toIntOrNull() ?: 0))
                         },
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    chipRow(
+                        label = "计价币种",
+                        options = listOf("" to "未设置", "USD" to "USD", "CNY" to "CNY"),
+                        selected = model.priceCurrency.orEmpty(),
+                        onPick = { onUpdate(model.copy(priceCurrency = it.ifEmpty { null })) },
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         priceField(
                             identity = model.modelId + ":input",
-                            label = "输入单价/M",
+                            label = "普通输入单价 / 百万Token",
                             value = model.priceInPerM,
                             onChange = { onUpdate(model.copy(priceInPerM = it)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        priceField(
+                            identity = model.modelId + ":cached",
+                            label = "缓存输入单价 / 百万Token",
+                            value = model.priceCachedInPerM,
+                            onChange = { onUpdate(model.copy(priceCachedInPerM = it)) },
+                            modifier = Modifier.fillMaxWidth(),
                         )
                         priceField(
                             identity = model.modelId + ":output",
-                            label = "输出单价/M",
+                            label = "输出单价 / 百万Token",
                             value = model.priceOutPerM,
                             onChange = { onUpdate(model.copy(priceOutPerM = it)) },
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                        Text("仅估算Token费用，不含税费、工具费或阶梯价。币种和缓存口径不明则不估算；修改只影响新请求，不重算旧账本。",
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
 
@@ -620,7 +637,8 @@ internal fun ModelRow(
 
 /** Price fields keep accepted decimal text while the model retains the numeric value. */
 @Composable
-internal fun priceField(identity: String, label: String, value: Double?, onChange: (Double?) -> Unit) {
+internal fun priceField(identity: String, label: String, value: Double?, onChange: (Double?) -> Unit,
+                        modifier: Modifier = Modifier.width(140.dp)) {
     var text by remember(identity) { mutableStateOf(com.aqi.ccb.gateway.ModelPricing.format(value)) }
     var lastEmitted by remember(identity) { mutableStateOf(value) }
     var rejectedInput by remember(identity) { mutableStateOf(false) }
@@ -648,7 +666,7 @@ internal fun priceField(identity: String, label: String, value: Double?, onChang
         supportingText = { Text(if (rejectedInput) "输入未采用，保留原值" else "空=未知；0=零价") },
         isError = rejectedInput,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-        modifier = Modifier.width(140.dp),
+        modifier = modifier,
         singleLine = true,
         textStyle = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFont),
     )

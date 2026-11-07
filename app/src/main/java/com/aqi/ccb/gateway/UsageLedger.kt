@@ -62,17 +62,67 @@ class UsageObserver {
     companion object { const val BODY_LIMIT = 256 * 1024 }
 }
 
+data class TokenCostEstimate(val currency: String?, val amount: String?, val status: String) {
+    fun json(): JSONObject = JSONObject().put("version", 1).put("currency", currency ?: JSONObject.NULL)
+        .put("amount", amount ?: JSONObject.NULL).put("status", status)
+}
+
+/** v1: standard Chat token tariffs only; deliberately no currency inference or FX conversion. */
+object TokenCostEstimator {
+    private fun decimal(value: String?): BigDecimal? {
+        if (value == null) return null
+        require(value.length <= 512)
+        val n = BigDecimal(value)
+        require(n.signum() >= 0 && n.precision() <= 324 && n.scale() in -324..324)
+        require(n <= BigDecimal.valueOf(Double.MAX_VALUE))
+        return n
+    }
+    fun estimate(sent: Boolean, complete: Boolean, httpStatus: Int?, observation: UsageObservation,
+                 currency: String?, inputPrice: String?, outputPrice: String?, cachedPrice: String?): TokenCostEstimate {
+        val unit = ModelPricing.currency(currency)
+        fun unknown(reason: String) = TokenCostEstimate(unit, null, reason)
+        if (!sent) return unknown("not_sent")
+        val u = observation.counts
+        if (!complete || httpStatus == null || httpStatus !in 200..299 || observation.status != "reported" || u == null)
+            return unknown("usage_unknown")
+        if (unit == null) return unknown("currency_unknown")
+        return try {
+            val input = decimal(inputPrice) ?: return unknown("price_unknown")
+            val output = decimal(outputPrice) ?: return unknown("price_unknown")
+            val cache = decimal(cachedPrice)
+            val cacheTokens: Long = when {
+                u.input == 0L -> 0L
+                u.cached != null -> u.cached
+                cache != null && cache.compareTo(input) == 0 -> 0L // tariff independent of the unreported split
+                else -> return unknown("cache_usage_unknown")
+            }
+            if (cacheTokens > 0 && cache == null) return unknown("cache_price_unknown")
+            val value = input.multiply(BigDecimal.valueOf(u.input - cacheTokens))
+                .add((cache ?: BigDecimal.ZERO).multiply(BigDecimal.valueOf(cacheTokens)))
+                .add(output.multiply(BigDecimal.valueOf(u.output))) // reasoning is already included in output
+                .movePointLeft(6).stripTrailingZeros().toPlainString()
+            TokenCostEstimate(unit, value, "estimated")
+        } catch (_: Exception) { unknown("invalid_price") }
+    }
+}
+
+data class CurrencyEstimate(val currency: String, val amount: String, val attempts: Long) {
+    fun json(): JSONObject = JSONObject().put("currency", currency).put("amount", amount).put("attempts", attempts)
+}
+
 data class UsageAttemptRecord(
     val providerId: String, val modelId: String, val credentialId: String?, val httpStatus: Int?,
     val sent: Boolean, val responseComplete: Boolean, val observation: UsageObservation,
     val priceInput: String?, val priceOutput: String?,
+    val currency: String? = null, val priceCachedInput: String? = null, val costEstimate: TokenCostEstimate? = null,
 ) {
     fun json(): JSONObject = JSONObject().put("providerId", providerId).put("modelId", modelId)
         .put("credentialId", credentialId ?: JSONObject.NULL).put("httpStatus", httpStatus ?: JSONObject.NULL)
         .put("sent", sent).put("responseComplete", responseComplete).put("usageStatus", observation.status)
         .put("usage", observation.counts?.json() ?: JSONObject.NULL)
         .put("priceInputPerM", priceInput ?: JSONObject.NULL).put("priceOutputPerM", priceOutput ?: JSONObject.NULL)
-        .put("currency", JSONObject.NULL).put("cost", JSONObject.NULL)
+        .put("currency", currency ?: JSONObject.NULL).put("priceCachedInputPerM", priceCachedInput ?: JSONObject.NULL)
+        .put("cost", JSONObject.NULL).put("tokenCostEstimate", costEstimate?.json() ?: JSONObject.NULL)
 }
 
 class UsageAttemptCapture internal constructor(private val provider: Provider, private val model: Model, credential: String) {
@@ -84,9 +134,12 @@ class UsageAttemptCapture internal constructor(private val provider: Provider, p
     fun finish(status: Int?, sent: Boolean, complete: Boolean) {
         if (record != null) return
         fun price(v: Double?): String? = v?.takeIf { it.isFinite() && it >= 0 }?.let { ModelPricing.format(it) }
+        val usage = if (sent) observer.finish(complete) else UsageObservation("not_sent", null)
+        val input = price(model.priceInPerM); val output = price(model.priceOutPerM); val cached = price(model.priceCachedInPerM)
+        val currency = ModelPricing.currency(model.priceCurrency)
         record = UsageAttemptRecord(boundedId(provider.id), boundedId(model.modelId), fingerprint, status,
-            sent, complete, if (sent) observer.finish(complete) else UsageObservation("not_sent", null),
-            price(model.priceInPerM), price(model.priceOutPerM))
+            sent, complete, usage, input, output, currency, cached,
+            TokenCostEstimator.estimate(sent, complete, status, usage, currency, input, output, cached))
     }
     internal fun result(): UsageAttemptRecord = record ?: UsageAttemptRecord(boundedId(provider.id), boundedId(model.modelId),
         fingerprint, null, true, false, observer.finish(false), null, null)
@@ -131,6 +184,8 @@ data class UsageSummary(
     val reasoningTokens: Long = 0, val reasoningReportedAttempts: Long = 0, val omittedAttempts: Long = 0,
     val retainedLimit: Int = 512, val oldestMs: Long = 0, val storageStatus: String = "ok", val readErrors: Int = 0,
     val unpersisted: Int = 0, val recent: List<UsageRecent> = emptyList(),
+    val estimatedCosts: List<CurrencyEstimate> = emptyList(), val estimatedAttempts: Long = 0,
+    val unestimatedSentAttempts: Long = 0,
 ) {
     fun json(): JSONObject = JSONObject().put("scope", "retained_completed_chat_requests").put("requests", requests)
         .put("successful", successful).put("failed", failed).put("cancelled", cancelled).put("localRejected", localRejected)
@@ -140,7 +195,9 @@ data class UsageSummary(
         .put("reportedReasoningTokens", reasoningTokens).put("reasoningReportedAttempts", reasoningReportedAttempts)
         .put("omittedAttempts", omittedAttempts).put("retainedLimit", retainedLimit).put("oldestMs", oldestMs)
         .put("storageStatus", storageStatus).put("readErrors", readErrors).put("unpersisted", unpersisted)
-        .put("cost", JSONObject.NULL).put("costStatus", "currency_and_cache_prices_unconfigured").put("budgetEnforced", false)
+        .put("cost", JSONObject.NULL).put("costStatus", "token_estimates_only_not_invoice").put("budgetEnforced", false)
+        .put("estimatedCosts", JSONArray(estimatedCosts.map { it.json() })).put("estimatedAttempts", estimatedAttempts)
+        .put("unestimatedSentAttempts", unestimatedSentAttempts)
         .put("recent", JSONArray(recent.map { JSONObject().put("requestId", it.requestId).put("outcome", it.outcome)
             .put("attempts", it.attempts).put("timeMs", it.timeMs) }))
 }
@@ -209,12 +266,22 @@ class UsageLedger(private val directory: File, private val limit: Int = 512, pri
         var ok = 0; var failed = 0; var cancelled = 0; var rejected = 0
         var attempts = 0L; var reported = 0L; var unknown = 0L; var notSent = 0L
         var input = 0L; var output = 0L; var cached = 0L; var cacheN = 0L; var reasoning = 0L; var reasoningN = 0L; var omitted = 0L
+        val costs = sortedMapOf<String, BigDecimal>(); val costCounts = mutableMapOf<String, Long>()
+        var estimated = 0L; var unestimated = 0L
         retained.forEach { stored ->
             val r = stored.record
             when (r.outcome) { "success" -> ok++; "cancelled" -> cancelled++; "local_reject" -> rejected++; else -> failed++ }
             attempts += r.attemptCount
             omitted += r.attemptCount - r.attempts.size
             r.attempts.forEach { a ->
+                val estimate = a.costEstimate
+                if (a.sent) {
+                    if (estimate?.status == "estimated" && estimate.amount != null && estimate.currency in ModelPricing.CURRENCIES) {
+                        val unit = estimate.currency!!
+                        costs[unit] = (costs[unit] ?: BigDecimal.ZERO).add(BigDecimal(estimate.amount))
+                        costCounts[unit] = (costCounts[unit] ?: 0L) + 1L; estimated++
+                    } else unestimated++
+                }
                 val u = a.observation.counts
                 when {
                     !a.sent -> notSent++
@@ -230,7 +297,9 @@ class UsageLedger(private val directory: File, private val limit: Int = 512, pri
         summary = UsageSummary(retained.size, ok, failed, cancelled, rejected, attempts, reported, unknown, notSent,
             input, output, cached, cacheN, reasoning, reasoningN, omitted, limit, retained.peekFirst()?.record?.timeMs ?: 0L,
             if (blocked || writeError) "error" else if (readErrors > 0) "partial" else "ok", readErrors, unpersisted,
-            retained.toList().takeLast(5).asReversed().map { UsageRecent(it.record.requestId, it.record.outcome, it.record.attemptCount, it.record.timeMs) })
+            retained.toList().takeLast(5).asReversed().map { UsageRecent(it.record.requestId, it.record.outcome, it.record.attemptCount, it.record.timeMs) },
+            costs.map { (unit, amount) -> CurrencyEstimate(unit, amount.stripTrailingZeros().toPlainString(), costCounts.getValue(unit)) },
+            estimated, unestimated)
     }
     companion object {
         const val MAX_RECORD_BYTES = 96 * 1024
@@ -257,8 +326,19 @@ class UsageLedger(private val directory: File, private val limit: Int = 512, pri
                 }
                 val credential = if (a.isNull("credentialId")) null else a.getString("credentialId").also { require(it.matches(Regex("[a-f0-9]{32}"))) }
                 val http = if (a.isNull("httpStatus")) null else a.getInt("httpStatus").also { require(it in 100..599) }
+                val input = price("priceInputPerM"); val output = price("priceOutputPerM"); val cached = price("priceCachedInputPerM")
+                val currency = if (a.isNull("currency")) null else a.getString("currency").also { require(it in ModelPricing.CURRENCIES) }
+                val observation = UsageObservation(state, u)
+                // Legacy records have no estimate. Never apply current configuration to historical rows.
+                val estimate = if (a.isNull("tokenCostEstimate")) null else a.getJSONObject("tokenCostEstimate").let { e ->
+                    require(e.get("version") is Number && BigDecimal(e.get("version").toString()).compareTo(BigDecimal.ONE) == 0)
+                    val saved = TokenCostEstimate(if (e.isNull("currency")) null else e.getString("currency"),
+                        if (e.isNull("amount")) null else e.getString("amount"), e.getString("status"))
+                    require(saved == TokenCostEstimator.estimate(sent, complete, http, observation, currency, input, output, cached))
+                    saved
+                }
                 UsageAttemptRecord(boundedId(a.getString("providerId")), boundedId(a.getString("modelId")), credential,
-                    http, sent, complete, UsageObservation(state, u), price("priceInputPerM"), price("priceOutputPerM"))
+                    http, sent, complete, observation, input, output, currency, cached, estimate)
             }
             return UsageRequestRecord(id, req, at, outcome, count, attempts)
         }

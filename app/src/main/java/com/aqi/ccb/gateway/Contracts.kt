@@ -36,6 +36,9 @@ enum class SwitchGranularity {
 /** Shared price semantics for runtime and editor. Versionless double-zero was historically unknown. */
 object ModelPricing {
     const val VERSION = 1
+    val CURRENCIES = setOf("USD", "CNY")
+    fun currency(value: Any?): String? = (value as? String)?.takeIf { it in CURRENCIES }
+    fun cachedPrice(value: Any?): Double? = (value as? Number)?.toDouble()?.takeIf { it.isFinite() && it >= 0 }
     fun decode(m: Map<String, Any?>): Pair<Double?, Double?> {
         fun value(key: String): Double? = (m[key] as? Number)?.toDouble()?.takeIf { it.isFinite() && it >= 0.0 }
         val input = value("priceInPerM"); val output = value("priceOutPerM")
@@ -108,7 +111,9 @@ data class Model(
      *   选路         -> 只用 enabled 的
      * 默认 true 兼容旧配置。
      */
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val priceCurrency: String? = null,
+    val priceCachedInPerM: Double? = null,
 ) {
     val hasPrice: Boolean get() = ModelPricing.known(priceInPerM, priceOutPerM)
     val blendedPrice: Double get() = ModelPricing.blended(priceInPerM, priceOutPerM)
@@ -141,6 +146,8 @@ data class Model(
             contextLength = (m["contextLength"] as? Number)?.toInt() ?: 0,
             priceInPerM = pricing.first,
             priceOutPerM = pricing.second,
+            priceCurrency = ModelPricing.currency(m["priceCurrency"]),
+            priceCachedInPerM = ModelPricing.cachedPrice(m["priceCachedInPerM"]),
             // 必须读：否则 UI 勾选对网关完全无效
             enabled = m["enabled"] as? Boolean ?: true
         )

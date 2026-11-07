@@ -36,8 +36,18 @@ internal fun UsagePanel(summary: UsageSummary) {
             },
         )
         item(
-            headlineContent = { Text("费用与预算：尚未启用") },
-            supportingContent = { Text("现有定价缺少明确币种与缓存单价；此处不是供应商账单，不据此执行消费扣限。") },
+            headlineContent = { Text("Token费用估算 · 不自动换汇") },
+            supportingContent = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (summary.estimatedCosts.isEmpty()) Text("暂无可估算记录；请为新请求配置币种与所需单价。")
+                    summary.estimatedCosts.forEach { price -> Text("${price.currency} ${price.amount} · ${price.attempts} 次尝试") }
+                    Text("已估算 ${summary.estimatedAttempts} · 未能估算 ${summary.unestimatedSentAttempts}；另有 ${summary.omittedAttempts} 次省略详情。")
+                }
+            },
+        )
+        item(
+            headlineContent = { Text("预算扣限：尚未启用") },
+            supportingContent = { Text("仅当前保留窗口的Token估算，缺失用量、币种或缓存单价不会记零；不含工具费、税费、阶梯价，不是供应商账单。") },
         )
         item(
             headlineContent = {

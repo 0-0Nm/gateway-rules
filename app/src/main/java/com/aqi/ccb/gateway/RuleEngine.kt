@@ -169,6 +169,14 @@ object RuleEngine {
             }
             return cs
         }
+        val currencies = priced.map { it.m.priceCurrency }.distinct()
+        if (currencies.size > 1) {
+            cs.forEach { it.why.add("currency_not_comparable") }
+            if (!ctx.dryRun) GateLog.warn("rule", "cheapest_first: mixed or partially unknown currencies; preserving order")
+            return cs
+        }
+        // Existing all-unknown prices retain their legacy ordering, never used as a billed amount.
+        if (currencies.singleOrNull() == null) priced.forEach { it.why.add("legacy_currency_unset") }
         // 有价的优先且按价升序，无价的垫底并保持原相对顺序
         val withPrice = cs.filter { it.m.hasPrice }
             .sortedBy { it.m.blendedPrice }

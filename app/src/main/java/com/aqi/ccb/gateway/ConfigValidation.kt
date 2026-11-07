@@ -43,7 +43,9 @@ object ConfigValidation {
                 if(!ids.add(id(m,"modelId"))) fail("Duplicate model id")
                 flag(m,"enabled");number(m,"contextLength",integral=true)
                 if (m.has("priceVersion") && (m.opt("priceVersion") as? Number)?.toDouble() != ModelPricing.VERSION.toDouble()) fail("Unsupported priceVersion")
-                for (key in listOf("priceInPerM","priceOutPerM")) {
+                if (m.has("priceCurrency") && !m.isNull("priceCurrency") && ModelPricing.currency(m.opt("priceCurrency")) == null)
+                    fail("priceCurrency must be USD, CNY or null")
+                for (key in listOf("priceInPerM","priceOutPerM","priceCachedInPerM")) {
                     if (m.has(key) && m.isNull(key)) {
                         if (!m.has("priceVersion")) fail("Null price requires priceVersion")
                     } else number(m,key)

@@ -128,6 +128,26 @@
         "enabled": {
           "type": "boolean",
           "default": true
+        },
+        "priceCurrency": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            null,
+            "USD",
+            "CNY"
+          ],
+          "description": "Explicit currency. Missing/null is unknown; never inferred for legacy prices. No exchange rate conversion."
+        },
+        "priceCachedInPerM": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Cached-input price per million tokens in priceCurrency. Null/missing is unknown, explicit 0 is zero price."
         }
       }
     },

@@ -81,7 +81,15 @@ class AppContract(unittest.TestCase):
   for p in ['gateway/GatewayService.kt','data/McpBridge.kt','MainActivity.kt']:
    s=(ROOT/'app/src/main/java/com/aqi/ccb'/p).read_text();self.assertIn('UsageLedgerStore.open',s);self.assertIn('"usage-v1"',s)
  def test_usage_panel_discloses_unknown_and_not_billing(self):
-  s=(ROOT/'app/src/main/java/com/aqi/ccb/ui/UsagePanel.kt').read_text();self.assertIn('用量未知',s);self.assertIn('费用与预算：尚未启用',s);self.assertIn('最多显示保留',s)
+  s=(ROOT/'app/src/main/java/com/aqi/ccb/ui/UsagePanel.kt').read_text();self.assertIn('用量未知',s);self.assertIn('预算扣限：尚未启用',s);self.assertIn('不是供应商账单',s);self.assertIn('最多显示保留',s)
  def test_usage_observer_does_not_force_upstream_usage_or_change_retry(self):
   s=(ROOT/'app/src/main/java/com/aqi/ccb/gateway/GatewayServer.kt').read_text();self.assertNotIn('include_usage',s);self.assertIn('if (code !in setOf(429, 503)) break',s);self.assertIn('if (run.sent || run.committed) break',s);self.assertIn('usageObserver?.observe(event)',s)
+ def test_price_editor_exposes_currency_and_cached_tariff(self):
+  s=(ROOT/'app/src/main/java/com/aqi/ccb/ui/ProviderEditScreen.kt').read_text();self.assertIn('计价币种',s);self.assertIn('priceCachedInPerM',s);self.assertIn('modifier = Modifier.fillMaxWidth()',s)
+  picker=(ROOT/'app/src/main/java/com/aqi/ccb/ui/ModelPicker.kt').read_text();self.assertIn('model.priceCurrency',picker);self.assertNotIn('Tag("¥"',picker)
+ def test_cost_display_groups_currencies_and_disclaims_invoice(self):
+  s=(ROOT/'app/src/main/java/com/aqi/ccb/ui/UsagePanel.kt').read_text();self.assertIn('summary.estimatedCosts.forEach',s);self.assertIn('不自动换汇',s);self.assertIn('预算扣限：尚未启用',s);self.assertIn('不是供应商账单',s)
+ def test_cost_fields_reach_model_patch_contract(self):
+  for p in ['gateway/ConfigCommands.kt','gateway/ConfigValidation.kt','gateway/McpServer.kt','data/ModelInfo.kt']:
+   s=(ROOT/'app/src/main/java/com/aqi/ccb'/p).read_text();self.assertIn('priceCurrency',s);self.assertIn('priceCachedInPerM',s)
 if __name__=='__main__':unittest.main(verbosity=2)

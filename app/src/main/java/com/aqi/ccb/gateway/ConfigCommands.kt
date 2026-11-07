@@ -42,12 +42,12 @@ object ConfigCommands {
         }
     }
     fun updateModel(ctx:Context,pid:String,mid:String,patch:JSONObject):ConfigStore.Commit {
-        fields(patch,setOf("displayName","enabled","type","abilities","inputModalities","outputModalities","tools","contextLength","priceInPerM","priceOutPerM"))
+        fields(patch,setOf("displayName","enabled","type","abilities","inputModalities","outputModalities","tools","contextLength","priceInPerM","priceOutPerM","priceCurrency","priceCachedInPerM"))
         return ConfigStore.transact(ctx,expected(patch)){s->
             val a=provider(s,pid).getJSONArray("models")
             val model=(0 until a.length()).map{a.getJSONObject(it)}.firstOrNull{it.optString("modelId")==mid}
                 ?:fail("NOT_FOUND","Model not found")
-            if (patch.has("priceInPerM") || patch.has("priceOutPerM")) {
+            if (listOf("priceInPerM", "priceOutPerM", "priceCurrency", "priceCachedInPerM").any { patch.has(it) }) {
                 val old = ModelPricing.decode(ConfigStore.jsonToMap(model))
                 model.put("priceVersion", ModelPricing.VERSION)
                 model.put("priceInPerM", old.first ?: JSONObject.NULL)
